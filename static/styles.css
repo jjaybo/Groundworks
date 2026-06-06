@@ -1,0 +1,534 @@
+:root {
+    color-scheme: light;
+    --ink: #1e2820;
+    --muted: #50645a;
+    --line: #d8ecd8;
+    --surface: #ffffff;
+    --soft: #ecf5ec;
+    --green: #3b9e3e;
+    --green-2: #76bb78;
+    --green-3: #d8ecd8;
+    --danger: #8f2c2c;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    color: var(--ink);
+    background: var(--soft);
+    font-family: "Open Sans", Arial, Helvetica, sans-serif;
+    line-height: 1.5;
+}
+
+.site-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 18px 32px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+}
+
+.brand {
+    color: var(--green);
+    text-decoration: none;
+}
+
+.official-logo {
+    display: block;
+    width: 190px;
+    max-width: 46vw;
+    height: auto;
+}
+
+nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+}
+
+nav a {
+    color: var(--ink);
+    text-decoration: none;
+    font-weight: 700;
+}
+
+main {
+    width: min(1120px, calc(100% - 32px));
+    margin: 0 auto;
+    padding: 32px 0 56px;
+}
+
+.hero {
+    min-height: 420px;
+    display: grid;
+    align-items: center;
+    padding: 48px;
+    color: white;
+    background:
+        linear-gradient(90deg, rgba(20, 59, 25, 0.94), rgba(59, 158, 62, 0.38)),
+        url("https://images.unsplash.com/photo-1558904541-efa843a96f01?auto=format&fit=crop&w=1600&q=80");
+    background-position: center;
+    background-size: cover;
+    border-radius: 8px;
+}
+
+.hero h1 {
+    max-width: 680px;
+    margin: 8px 0;
+    font-size: 56px;
+    line-height: 1.05;
+}
+
+.hero p {
+    max-width: 620px;
+    font-size: 20px;
+}
+
+.eyebrow {
+    color: var(--green-3);
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 0;
+    text-transform: uppercase;
+}
+
+.actions,
+.heading-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.button,
+button {
+    display: inline-block;
+    min-height: 44px;
+    padding: 11px 16px;
+    border: 0;
+    border-radius: 6px;
+    color: white;
+    background: var(--green);
+    font: inherit;
+    font-weight: 800;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.button.secondary {
+    color: var(--green);
+    background: white;
+}
+
+.button.compact {
+    min-height: 36px;
+    padding: 8px 10px;
+}
+
+.band,
+.card,
+.metric,
+.form,
+table,
+.notice {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.band {
+    margin-top: 24px;
+    padding: 28px;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+}
+
+.card,
+.metric {
+    padding: 20px;
+}
+
+.card h3 {
+    margin-top: 0;
+}
+
+.card span {
+    display: block;
+    margin-top: 10px;
+    color: var(--muted);
+}
+
+.metric strong {
+    display: block;
+    color: var(--green);
+    font-size: 42px;
+    line-height: 1;
+}
+
+.metric span {
+    color: var(--muted);
+    font-weight: 700;
+}
+
+.form {
+    display: grid;
+    gap: 16px;
+    max-width: 620px;
+    padding: 22px;
+}
+
+label {
+    display: grid;
+    gap: 6px;
+    font-weight: 800;
+}
+
+input,
+textarea,
+select {
+    width: 100%;
+    min-height: 42px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--ink);
+    background: white;
+    font: inherit;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    overflow: hidden;
+}
+
+th,
+td {
+    padding: 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+}
+
+th {
+    background: var(--green-3);
+}
+
+.notice {
+    padding: 18px;
+    font-weight: 800;
+}
+
+.inline-form {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 8px;
+}
+
+.inline-form.stacked {
+    align-items: stretch;
+    flex-direction: column;
+}
+
+.inline-form input,
+.inline-form select {
+    min-width: 110px;
+}
+
+.inline-form textarea {
+    min-width: 220px;
+}
+
+.status {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 999px;
+    color: var(--green);
+    background: var(--green-3);
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.muted,
+small {
+    color: var(--muted);
+}
+
+.danger {
+    color: var(--danger);
+}
+
+.invoice-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.payment-panel {
+    max-width: 900px;
+    margin: 0 auto 16px;
+    padding: 20px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.payment-panel h2 {
+    margin: 0 0 14px;
+}
+
+.payment-form {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+}
+
+.payment-form label:nth-of-type(4),
+.payment-form label:nth-of-type(5) {
+    grid-column: span 3;
+}
+
+.payment-history {
+    padding: 28px 0 10px;
+}
+
+.payment-history h2 {
+    margin: 0 0 12px;
+    color: var(--green);
+    font-size: 14px;
+    text-transform: uppercase;
+}
+
+.invoice-sheet {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 42px;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 12px 30px rgba(30, 40, 32, 0.08);
+}
+
+.invoice-header {
+    display: grid;
+    grid-template-columns: 1.3fr 0.7fr;
+    gap: 32px;
+    padding-bottom: 24px;
+    border-bottom: 4px solid var(--green);
+}
+
+.invoice-company .official-logo {
+    width: 260px;
+    max-width: 100%;
+    margin-bottom: 14px;
+}
+
+.invoice-title {
+    text-align: right;
+}
+
+.invoice-title h1 {
+    margin: 0 0 18px;
+    color: var(--green);
+    font-size: 44px;
+    line-height: 1;
+    text-transform: uppercase;
+}
+
+.invoice-title dl,
+.payment-stub dl {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+}
+
+.invoice-title div,
+.payment-stub div {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 10px;
+}
+
+.invoice-title dt,
+.payment-stub dt {
+    color: var(--muted);
+    font-weight: 800;
+}
+
+.invoice-title dd,
+.payment-stub dd {
+    margin: 0;
+}
+
+.invoice-parties {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+    padding: 26px 0;
+}
+
+.invoice-parties h2,
+.invoice-notes h2,
+.payment-stub h2 {
+    margin: 0 0 8px;
+    color: var(--green);
+    font-size: 14px;
+    text-transform: uppercase;
+}
+
+.invoice-lines {
+    border-radius: 0;
+}
+
+.invoice-lines small {
+    display: block;
+    margin-top: 6px;
+}
+
+.invoice-summary {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 28px;
+    padding-top: 24px;
+}
+
+.invoice-notes p {
+    margin: 0 0 10px;
+}
+
+.invoice-totals {
+    border: 1px solid var(--line);
+}
+
+.total-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+}
+
+.total-row:last-child {
+    border-bottom: 0;
+}
+
+.total-row.total {
+    color: white;
+    background: var(--green);
+    font-weight: 800;
+}
+
+.signature-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 42px;
+    padding: 42px 0 22px;
+}
+
+.signature-grid div {
+    min-height: 70px;
+    border-bottom: 1px solid var(--ink);
+    display: flex;
+    align-items: flex-end;
+}
+
+.signature-grid span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.invoice-footer {
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+}
+
+.payment-stub {
+    margin-top: 28px;
+    padding-top: 18px;
+    border-top: 2px dashed var(--line);
+}
+
+@media (max-width: 760px) {
+    .site-header {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 16px;
+    }
+
+    .hero {
+        min-height: 360px;
+        padding: 28px;
+    }
+
+    .hero h1 {
+        font-size: 40px;
+    }
+
+    table {
+        display: block;
+        overflow-x: auto;
+    }
+
+    .invoice-sheet {
+        padding: 24px;
+    }
+
+    .invoice-header,
+    .invoice-parties,
+    .invoice-summary,
+    .signature-grid,
+    .payment-form {
+        grid-template-columns: 1fr;
+    }
+
+    .payment-form label:nth-of-type(4),
+    .payment-form label:nth-of-type(5) {
+        grid-column: auto;
+    }
+
+    .invoice-title {
+        text-align: left;
+    }
+}
+
+@media print {
+    body {
+        background: white;
+    }
+
+    .site-header,
+    .no-print {
+        display: none;
+    }
+
+    main {
+        width: 100%;
+        padding: 0;
+    }
+
+    .invoice-sheet {
+        max-width: none;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+    }
+}
