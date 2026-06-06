@@ -135,6 +135,8 @@ def init_database():
                 id integer primary key autoincrement,
                 customer_id integer not null references customers(id),
                 invoice_id integer not null references invoices(id),
+                recorded_by_user_id integer references users(id),
+                recorded_by_name text,
                 amount_cents integer not null,
                 method text not null,
                 reference text,
@@ -147,6 +149,8 @@ def init_database():
 
         ensure_column(connection, "jobs", "completed_at", "text")
         ensure_column(connection, "jobs", "completion_notes", "text")
+        ensure_column(connection, "payments", "recorded_by_user_id", "integer references users(id)")
+        ensure_column(connection, "payments", "recorded_by_name", "text")
 
         admin_count = connection.execute("select count(*) from users where role = 'admin'").fetchone()[0]
         if admin_count == 0:
@@ -811,6 +815,7 @@ class App(BaseHTTPRequestHandler):
         if self.command != "POST":
             self.redirect("/invoices")
             return
+        user = self.current_user()
         data = self.form_data()
         invoice_id = data.get("invoice_id")
         method = data.get("method")
@@ -840,12 +845,14 @@ class App(BaseHTTPRequestHandler):
             connection.execute(
                 """
                 insert into payments
-                (customer_id, invoice_id, amount_cents, method, reference, note, paid_at, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?)
+                (customer_id, invoice_id, recorded_by_user_id, recorded_by_name, amount_cents, method, reference, note, paid_at, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     invoice["customer_id"],
                     invoice["id"],
+                    user["id"],
+                    user["name"],
                     amount_cents,
                     method,
                     data.get("reference"),
@@ -989,6 +996,7 @@ class App(BaseHTTPRequestHandler):
             f"""
             <tr>
                 <td>{esc(payment['paid_at'])}</td>
+                <td>{esc(payment['recorded_by_name'] or 'Unknown')}</td>
                 <td>{esc(payment['method'])}</td>
                 <td>{esc(payment['reference'])}</td>
                 <td>{esc(payment['note'])}</td>
@@ -1003,7 +1011,7 @@ class App(BaseHTTPRequestHandler):
             <section class="payment-history">
                 <h2>Payment History</h2>
                 <table>
-                    <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th>Note</th><th>Amount</th></tr></thead>
+                    <thead><tr><th>Date</th><th>Recorded By</th><th>Method</th><th>Reference</th><th>Note</th><th>Amount</th></tr></thead>
                     <tbody>{payment_rows}</tbody>
                 </table>
             </section>
