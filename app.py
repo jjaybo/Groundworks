@@ -27,6 +27,7 @@ APP_NAME = "Groundworks"
 JOB_STATUSES = ["Scheduled", "In Progress", "Completed", "Invoiced", "Cancelled"]
 DEMO_SERVICE_NAMES = ["Lawn Mowing", "Mulch Installation", "Leaf Cleanup", "Recurring Lawn Plan"]
 PAYMENT_METHODS = ["Cash", "Check", "Card", "Other"]
+INVOICE_STATUSES = ["Open", "Overdue", "Paid"]
 
 
 def db():
@@ -176,6 +177,7 @@ def init_database():
             connection.executemany("delete from services where name = ?", [(name,) for name in DEMO_SERVICE_NAMES])
         sync_price_list(connection)
         recalculate_invoice_due_dates(connection)
+        sync_invoice_statuses(connection)
 
 
 def ensure_column(connection, table, column, definition):
@@ -225,6 +227,36 @@ def recalculate_invoice_due_dates(connection):
         )
 
 
+def invoice_status(invoice, today=None):
+    if invoice_balance(invoice) <= 0:
+        return "Paid"
+    today = today or dt.date.today().isoformat()
+    if invoice["due_date"] < today:
+        return "Overdue"
+    return "Open"
+
+
+def sync_invoice_statuses(connection):
+    today = dt.date.today().isoformat()
+    connection.execute(
+        """
+        update invoices
+        set status = case
+            when amount_paid_cents >= total_cents then 'Paid'
+            when due_date < ? then 'Overdue'
+            else 'Open'
+        end
+        where status not in ('Open', 'Overdue', 'Paid')
+           or status != case
+                when amount_paid_cents >= total_cents then 'Paid'
+                when due_date < ? then 'Overdue'
+                else 'Open'
+           end
+        """,
+        (today, today),
+    )
+
+
 def dollars(cents):
     return f"${cents / 100:,.2f}"
 
@@ -251,6 +283,10 @@ def add_days_to_date(value, days):
 
 def invoice_balance(invoice):
     return invoice["total_cents"] - invoice["amount_paid_cents"]
+
+
+def status_badge(status):
+    return f"<span class='status status-{esc(status).lower()}'>{esc(status)}</span>"
 
 
 def esc(value):
@@ -550,10 +586,13 @@ class App(BaseHTTPRequestHandler):
     def dashboard(self):
         user = self.current_user()
         with db() as connection:
+            sync_invoice_statuses(connection)
             customer_count = connection.execute("select count(*) from customers").fetchone()[0]
             request_count = connection.execute("select count(*) from estimate_requests where status = 'New'").fetchone()[0]
             job_count = connection.execute("select count(*) from jobs where status in ('Scheduled', 'In Progress')").fetchone()[0]
-            invoice_total = connection.execute("select coalesce(sum(total_cents - amount_paid_cents), 0) from invoices where status = 'Open'").fetchone()[0]
+            invoice_total = connection.execute("select coalesce(sum(total_cents - amount_paid_cents), 0) from invoices where status in ('Open', 'Overdue')").fetchone()[0]
+            overdue_count = connection.execute("select count(*) from invoices where status = 'Overdue'").fetchone()[0]
+            overdue_total = connection.execute("select coalesce(sum(total_cents - amount_paid_cents), 0) from invoices where status = 'Overdue'").fetchone()[0]
         body = f"""
         <h1>Dashboard</h1>
         <div class="grid">
@@ -561,6 +600,7 @@ class App(BaseHTTPRequestHandler):
             <article class="metric"><strong>{request_count}</strong><span>New Requests</span></article>
             <article class="metric"><strong>{job_count}</strong><span>Open Jobs</span></article>
             <article class="metric"><strong>{dollars(invoice_total)}</strong><span>Open Invoices</span></article>
+            <article class="metric danger-metric"><strong>{overdue_count}</strong><span>Overdue Invoices</span><small>{dollars(overdue_total)} past due</small></article>
         </div>
         """
         self.respond(page("Dashboard", body, user))
@@ -815,7 +855,9 @@ class App(BaseHTTPRequestHandler):
                 ),
             )
             new_paid_total = invoice["amount_paid_cents"] + amount_cents
-            new_status = "Paid" if new_paid_total >= invoice["total_cents"] else "Open"
+            preview = dict(invoice)
+            preview["amount_paid_cents"] = new_paid_total
+            new_status = invoice_status(preview)
             connection.execute(
                 "update invoices set amount_paid_cents = ?, status = ? where id = ?",
                 (new_paid_total, new_status, invoice["id"]),
@@ -833,6 +875,7 @@ class App(BaseHTTPRequestHandler):
     def invoices(self):
         user = self.current_user()
         with db() as connection:
+            sync_invoice_statuses(connection)
             invoices = connection.execute(
                 """
                 select invoices.*, customers.name as customer_name, jobs.service_name, jobs.scheduled_for
@@ -852,7 +895,7 @@ class App(BaseHTTPRequestHandler):
                 <td>{esc(invoice['due_date'])}</td>
                 <td>{dollars(invoice['total_cents'])}</td>
                 <td>{dollars(invoice_balance(invoice))}</td>
-                <td><span class="status">{esc(invoice['status'])}</span></td>
+                <td>{status_badge(invoice_status(invoice))}</td>
             </tr>
             """
             for invoice in invoices
@@ -872,6 +915,7 @@ class App(BaseHTTPRequestHandler):
         user = self.current_user()
         invoice_id = (parse_qs(parsed.query).get("id") or [""])[0]
         with db() as connection:
+            sync_invoice_statuses(connection)
             invoice = connection.execute(
                 """
                 select invoices.*, customers.name as customer_name, customers.email, customers.phone,
@@ -913,6 +957,10 @@ class App(BaseHTTPRequestHandler):
             for item in line_items
         )
         amount_due = invoice_balance(invoice)
+        current_status = invoice_status(invoice)
+        overdue_notice = ""
+        if current_status == "Overdue":
+            overdue_notice = f"<div class='notice danger no-print'>This invoice is overdue. {dollars(amount_due)} is past due as of {esc(invoice['due_date'])}.</div>"
         paid_note = ""
         if invoice["amount_paid_cents"]:
             paid_note = f"<div class='total-row'><span>Amount Paid</span><strong>{dollars(invoice['amount_paid_cents'])}</strong></div>"
@@ -967,6 +1015,7 @@ class App(BaseHTTPRequestHandler):
             <a class="button secondary compact" href="/invoices">Back to Invoices</a>
             <button onclick="window.print()">Print Invoice</button>
         </div>
+        {overdue_notice}
         {payment_form}
         <article class="invoice-sheet">
             <header class="invoice-header">
@@ -981,6 +1030,7 @@ class App(BaseHTTPRequestHandler):
                         <div><dt>Invoice #</dt><dd>{esc(invoice['invoice_number'])}</dd></div>
                 <div><dt>Invoice Date</dt><dd>{esc(invoice['created_at'].split(' ')[0])}</dd></div>
                         <div><dt>Due Date</dt><dd>{esc(invoice['due_date'])}</dd></div>
+                        <div><dt>Status</dt><dd>{status_badge(current_status)}</dd></div>
                     </dl>
                 </div>
             </header>

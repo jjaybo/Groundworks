@@ -180,6 +180,12 @@ table,
     font-weight: 700;
 }
 
+.metric small {
+    display: block;
+    margin-top: 6px;
+    font-weight: 800;
+}
+
 .form {
     display: grid;
     gap: 16px;
@@ -260,9 +266,29 @@ th {
     font-weight: 800;
 }
 
+.status-paid {
+    color: #245f27;
+    background: #dff3df;
+}
+
+.status-open {
+    color: #36616e;
+    background: #dceff3;
+}
+
+.status-overdue {
+    color: var(--danger);
+    background: #f7dddd;
+}
+
 .muted,
 small {
     color: var(--muted);
+}
+
+.danger-metric strong,
+.danger-metric small {
+    color: var(--danger);
 }
 
 .danger {
