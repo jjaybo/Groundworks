@@ -489,7 +489,12 @@ def page(title, body, user=None):
         </header>
         <main>{body}</main>
         <footer class="site-footer">
-            <p>{esc(COMPANY_NAME)} &nbsp; | &nbsp; <a href="/privacy-policy">Privacy Policy</a></p>
+            <p>
+                {esc(COMPANY_NAME)}
+                &nbsp; | &nbsp; <a href="/privacy-policy">Privacy Policy</a>
+                &nbsp; | &nbsp; <a href="/terms-and-conditions">Terms and Conditions</a>
+                &nbsp; | &nbsp; <a href="/estimate-terms">Estimate Terms</a>
+            </p>
         </footer>
     </body>
     </html>"""
@@ -514,6 +519,10 @@ class App(BaseHTTPRequestHandler):
                 self.request_estimate()
             elif path == "/privacy-policy":
                 self.privacy_policy()
+            elif path == "/terms-and-conditions":
+                self.terms_and_conditions()
+            elif path == "/estimate-terms":
+                self.estimate_terms()
             elif path == "/signup":
                 self.signup()
             elif path == "/login":
@@ -820,6 +829,165 @@ class App(BaseHTTPRequestHandler):
         </article>
         """
         self.respond(page("Privacy Policy", body, user))
+
+    def terms_and_conditions(self):
+        user = self.current_user()
+        body = f"""
+        <article class="legal-page">
+            <h1>Terms and Conditions</h1>
+            <p class="muted">Last updated: {dt.date.today().isoformat()}</p>
+
+            <section>
+                <h2>1. Overview</h2>
+                <p>These Terms and Conditions govern use of the J &amp; E Professional Services website, customer portal, online request forms, scheduling tools, estimate approval tools, invoice views, service records, and related electronic communications. By using this website or customer portal, creating an account, requesting service, approving an estimate, scheduling work, signing a service agreement, or accepting services, you agree to these terms.</p>
+            </section>
+
+            <section>
+                <h2>2. Customer Accounts and Portal Access</h2>
+                <p>Customers are responsible for keeping their login credentials private and for notifying J &amp; E Professional Services if they believe their account has been accessed without permission. The customer portal is provided so customers can view account information, estimates, jobs, invoices, service agreements, balances, and related service records.</p>
+                <p>Customers agree to provide accurate contact, billing, and service address information. J &amp; E Professional Services may rely on the information provided through the website, portal, phone, email, text message, or other written communication when scheduling or performing services.</p>
+            </section>
+
+            <section>
+                <h2>3. Acceptable Use</h2>
+                <p>You agree not to misuse the website or customer portal, attempt to access another customer's information, interfere with system security, submit false information, upload harmful files, or use the system for unlawful, abusive, fraudulent, or disruptive purposes. J &amp; E Professional Services may suspend or restrict access to the portal if misuse or unauthorized access is suspected.</p>
+            </section>
+
+            <section>
+                <h2>4. Estimates, Approvals, and Service Authorization</h2>
+                <p>Estimates are governed by the separate <a href="/estimate-terms">Estimate Terms</a>. An estimate is not authorization to begin work unless the customer approves the estimate or otherwise authorizes the work through written or electronic means. Approved estimates, work orders, invoices, schedules, and service requests are also governed by the applicable service agreement.</p>
+            </section>
+
+            <section>
+                <h2>5. Service Agreement</h2>
+                <p>Lawn care and property services are governed by the J &amp; E Professional Services Lawn Care Service Agreement. The service agreement may be signed electronically through the customer portal and may also be countersigned by a company representative or technician. Electronic signatures and electronic approvals have the same intended effect as handwritten signatures to the fullest extent permitted by law.</p>
+            </section>
+
+            <section>
+                <h2>6. Scheduling, Rescheduling, and Access</h2>
+                <p>Scheduled service times and arrival windows are estimates and may be affected by weather, traffic, equipment issues, previous job delays, unsafe conditions, or other circumstances outside the company's reasonable control. Customers are responsible for providing safe and reasonable access to service areas and for notifying the company about gates, locks, animals, hazards, concealed items, access limits, or property conditions that may affect the work.</p>
+            </section>
+
+            <section>
+                <h2>7. Payments, Credits, and Balances</h2>
+                <p>Payment is due according to the estimate, invoice, service agreement, or other written terms provided for the service. Account credits, deposits, payment records, balances, and invoices may be displayed in the customer portal for convenience. Online card payments, when available, are processed by a third-party payment processor. J &amp; E Professional Services does not store raw card numbers, expiration dates, or CVV codes.</p>
+            </section>
+
+            <section>
+                <h2>8. Communications</h2>
+                <p>Customers agree that J &amp; E Professional Services may contact them about estimates, scheduling, service updates, reminders, invoices, payments, account matters, service concerns, and related business communications by phone, email, text message, customer portal, or other contact information provided by the customer. Transactional communications may still be sent even if a customer opts out of promotional messages.</p>
+            </section>
+
+            <section>
+                <h2>9. Photos and Service Documentation</h2>
+                <p>Before, during, and after photos may be used for documentation, quality control, training, customer communication, dispute resolution, and business records, subject to the service agreement and privacy policy. The company will make reasonable efforts to avoid photographing individuals, personal identifying information, or areas unrelated to the services being performed.</p>
+            </section>
+
+            <section>
+                <h2>10. No Guarantee of Availability or Results</h2>
+                <p>The website and customer portal are provided as business tools and may occasionally be unavailable due to maintenance, internet issues, hosting interruptions, or other technical problems. Lawn and landscape results may vary because of weather, soil conditions, irrigation, pests, disease, property conditions, customer maintenance practices, and other factors outside the company's control.</p>
+            </section>
+
+            <section>
+                <h2>11. Limitation of Liability</h2>
+                <p>To the fullest extent permitted by law, J &amp; E Professional Services is not responsible for damages caused by misuse of the website or portal, inaccurate information supplied by the customer, circumstances outside the company's reasonable control, or hidden, undisclosed, unsafe, defective, or inaccessible property conditions. Service-related claims are subject to the limitation of liability language in the applicable service agreement.</p>
+            </section>
+
+            <section>
+                <h2>12. Changes to These Terms</h2>
+                <p>J &amp; E Professional Services may update these Terms and Conditions from time to time. Updated terms will become effective when posted on the website or otherwise provided to customers and will apply to future use of the website, portal, and services.</p>
+            </section>
+
+            <section>
+                <h2>13. Governing Law</h2>
+                <p>These Terms and Conditions are governed by the laws of the State of South Carolina, without regard to conflict of law principles.</p>
+            </section>
+
+            <section>
+                <h2>14. Contact</h2>
+                <p>
+                    J &amp; E Professional Services, LLC<br>
+                    Gaffney, South Carolina 29340<br>
+                    {esc(COMPANY_PHONE)}<br>
+                    <a href="mailto:{esc(COMPANY_EMAIL)}">{esc(COMPANY_EMAIL)}</a>
+                </p>
+            </section>
+
+            <div class="notice">
+                These terms are a working draft for business planning and should be reviewed by a qualified attorney before publication.
+            </div>
+        </article>
+        """
+        self.respond(page("Terms and Conditions", body, user))
+
+    def estimate_terms(self):
+        user = self.current_user()
+        body = f"""
+        <article class="legal-page">
+            <h1>Estimate Terms</h1>
+            <p class="muted">Last updated: {dt.date.today().isoformat()}</p>
+
+            <section>
+                <h2>1. Purpose of Estimates</h2>
+                <p>Estimates provided by J &amp; E Professional Services describe the expected scope and price of proposed services based on the information available at the time the estimate is prepared. Estimates may be prepared from customer-provided information, photographs, service history, public information, online requests, phone calls, messages, or in-person observations.</p>
+            </section>
+
+            <section>
+                <h2>2. Subject to Inspection</h2>
+                <p><strong>{esc(ESTIMATE_DISCLAIMER)}</strong></p>
+                <p>If property conditions, access issues, safety concerns, hidden items, inaccurate measurements, unusual debris, excessive growth, added service requests, or other facts discovered during inspection affect the work or price, J &amp; E Professional Services may revise the estimate before performing the affected work.</p>
+            </section>
+
+            <section>
+                <h2>3. Customer Approval Required</h2>
+                <p>No work will be performed and no additional charges will be incurred without prior customer approval. Approval may be given through the customer portal, typed electronic signature, email, text message, signed document, verbal authorization recorded by staff, or another written or electronic method accepted by the company.</p>
+            </section>
+
+            <section>
+                <h2>4. Expiration</h2>
+                <p>Each estimate is valid until the expiration date shown on that estimate. If no expiration date is shown, the estimate should be treated as valid for thirty (30) days from the date it was created. After expiration, pricing, scheduling availability, terms, and scope may need to be reviewed or updated.</p>
+            </section>
+
+            <section>
+                <h2>5. Scope of Work</h2>
+                <p>The approved estimate covers only the services and line items specifically listed in the estimate, service description, work order, schedule, invoice, or other written documentation approved by the customer. Additional services, changed conditions, or expanded scope require additional customer approval before work is performed.</p>
+            </section>
+
+            <section>
+                <h2>6. Scheduling After Approval</h2>
+                <p>Approval of an estimate authorizes J &amp; E Professional Services to schedule the approved work, subject to weather, technician availability, service area, access requirements, safety conditions, and other operational factors. Approval does not guarantee a specific service date or arrival time unless separately confirmed by the company.</p>
+            </section>
+
+            <section>
+                <h2>7. Deposits and Payment</h2>
+                <p>Some services may require a deposit, prepayment, or payment method on file before work is scheduled or performed. Any deposit, credit, or prepayment will be applied to the customer's account or invoice according to the applicable invoice and service agreement terms.</p>
+            </section>
+
+            <section>
+                <h2>8. Relationship to Service Agreement</h2>
+                <p>Approved estimates are incorporated into and governed by the J &amp; E Professional Services Lawn Care Service Agreement, along with any related work orders, invoices, schedules, service descriptions, and written amendments. If there is a conflict between these Estimate Terms and a signed service agreement, the signed service agreement controls to the extent permitted by law.</p>
+            </section>
+
+            <section>
+                <h2>9. Electronic Approval and Signatures</h2>
+                <p>By approving an estimate electronically, typing a signature, checking an approval box, or otherwise authorizing work through the customer portal or another electronic method, the customer agrees that the approval may be treated as an electronic signature and authorization for the approved work to the fullest extent permitted by law.</p>
+            </section>
+
+            <section>
+                <h2>10. Questions or Changes</h2>
+                <p>If a customer has questions, needs changes, or does not understand part of an estimate, the customer should contact J &amp; E Professional Services before approving the estimate.</p>
+                <p>
+                    {esc(COMPANY_PHONE)}<br>
+                    <a href="mailto:{esc(COMPANY_EMAIL)}">{esc(COMPANY_EMAIL)}</a>
+                </p>
+            </section>
+
+            <div class="notice">
+                These estimate terms are a working draft for business planning and should be reviewed by a qualified attorney before publication.
+            </div>
+        </article>
+        """
+        self.respond(page("Estimate Terms", body, user))
 
     def request_estimate(self):
         user = self.current_user()
@@ -1181,7 +1349,7 @@ class App(BaseHTTPRequestHandler):
                     <input type="hidden" name="estimate_id" value="{estimate['id']}">
                     <label>Your Name <input name="approval_name" value="{esc(customer['name'])}" required></label>
                     <label>Signature <input name="approval_signature" placeholder="Type your full legal name" required></label>
-                    <label class="checkbox-label"><input type="checkbox" name="accepted_terms" value="yes" required> I approve this estimate and understand the inspection disclaimer.</label>
+                    <label class="checkbox-label"><input type="checkbox" name="accepted_terms" value="yes" required> I approve this estimate, agree to the <a href="/estimate-terms">Estimate Terms</a>, and understand approved work is governed by the service agreement.</label>
                     <button>Approve Estimate</button>
                 </form>
             </section>
