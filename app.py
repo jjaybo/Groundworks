@@ -28,6 +28,8 @@ JOB_STATUSES = ["Scheduled", "In Progress", "Completed", "Invoiced", "Cancelled"
 DEMO_SERVICE_NAMES = ["Lawn Mowing", "Mulch Installation", "Leaf Cleanup", "Recurring Lawn Plan"]
 PAYMENT_METHODS = ["Cash", "Check", "Card", "Other"]
 INVOICE_STATUSES = ["Open", "Overdue", "Paid"]
+STAFF_ROLES = ["admin", "employee"]
+ESTIMATE_STATUSES = ["Draft", "Sent", "Approved", "Needs Changes", "Declined", "Converted"]
 
 
 def db():
@@ -96,9 +98,32 @@ def init_database():
                 created_at text not null
             );
 
+            create table if not exists estimates (
+                id integer primary key autoincrement,
+                customer_id integer not null references customers(id),
+                source_request_id integer references estimate_requests(id),
+                estimate_number text not null unique,
+                status text not null default 'Draft',
+                notes text,
+                terms text,
+                expires_at text,
+                created_at text not null,
+                updated_at text not null
+            );
+
+            create table if not exists estimate_line_items (
+                id integer primary key autoincrement,
+                estimate_id integer not null references estimates(id),
+                description text not null,
+                quantity integer not null default 1,
+                unit_price_cents integer not null,
+                total_cents integer not null
+            );
+
             create table if not exists jobs (
                 id integer primary key autoincrement,
                 customer_id integer not null references customers(id),
+                estimate_id integer references estimates(id),
                 service_name text not null,
                 scheduled_for text not null,
                 status text not null default 'Scheduled',
@@ -149,6 +174,7 @@ def init_database():
 
         ensure_column(connection, "jobs", "completed_at", "text")
         ensure_column(connection, "jobs", "completion_notes", "text")
+        ensure_column(connection, "jobs", "estimate_id", "integer references estimates(id)")
         ensure_column(connection, "payments", "recorded_by_user_id", "integer references users(id)")
         ensure_column(connection, "payments", "recorded_by_name", "text")
 
@@ -289,8 +315,13 @@ def invoice_balance(invoice):
     return invoice["total_cents"] - invoice["amount_paid_cents"]
 
 
+def estimate_total(estimate):
+    return estimate["total_cents"] or 0
+
+
 def status_badge(status):
-    return f"<span class='status status-{esc(status).lower()}'>{esc(status)}</span>"
+    class_name = esc(status).lower().replace(" ", "-")
+    return f"<span class='status status-{class_name}'>{esc(status)}</span>"
 
 
 def esc(value):
@@ -314,9 +345,14 @@ def page(title, body, user=None):
         nav += """
         <a href="/dashboard">Dashboard</a>
         <a href="/customers">Customers</a>
+        <a href="/estimates">Estimates</a>
         <a href="/jobs">Jobs</a>
         <a href="/invoices">Invoices</a>
         <a href="/inquiries">Requests</a>
+        """
+        if user["role"] == "admin":
+            nav += '<a href="/employees">Employees</a>'
+        nav += """
         <a href="/logout">Log Out</a>
         """
     else:
@@ -372,6 +408,21 @@ class App(BaseHTTPRequestHandler):
             elif path == "/customers/new":
                 self.require_user()
                 self.new_customer()
+            elif path == "/estimates":
+                self.require_user()
+                self.estimates()
+            elif path == "/estimates/new":
+                self.require_user()
+                self.new_estimate(parsed)
+            elif path == "/estimates/view":
+                self.require_user()
+                self.estimate_detail(parsed)
+            elif path == "/estimates/status":
+                self.require_user()
+                self.update_estimate_status()
+            elif path == "/estimates/convert":
+                self.require_user()
+                self.convert_estimate()
             elif path == "/jobs":
                 self.require_user()
                 self.jobs()
@@ -399,6 +450,12 @@ class App(BaseHTTPRequestHandler):
             elif path == "/inquiries":
                 self.require_user()
                 self.inquiries()
+            elif path == "/employees":
+                if self.require_admin():
+                    self.employees()
+            elif path == "/employees/new":
+                if self.require_admin():
+                    self.new_employee()
             elif path == "/static/styles.css":
                 self.static_css()
             elif path == "/static/logo-mark.svg":
@@ -428,6 +485,15 @@ class App(BaseHTTPRequestHandler):
     def require_user(self):
         if not self.current_user():
             raise PermissionError()
+
+    def require_admin(self):
+        user = self.current_user()
+        if not user:
+            raise PermissionError()
+        if user["role"] != "admin":
+            self.respond("Forbidden", HTTPStatus.FORBIDDEN)
+            return False
+        return True
 
     def respond(self, content, status=HTTPStatus.OK, content_type="text/html"):
         encoded = content.encode()
@@ -593,6 +659,7 @@ class App(BaseHTTPRequestHandler):
             sync_invoice_statuses(connection)
             customer_count = connection.execute("select count(*) from customers").fetchone()[0]
             request_count = connection.execute("select count(*) from estimate_requests where status = 'New'").fetchone()[0]
+            estimate_count = connection.execute("select count(*) from estimates where status in ('Draft', 'Sent', 'Approved', 'Needs Changes')").fetchone()[0]
             job_count = connection.execute("select count(*) from jobs where status in ('Scheduled', 'In Progress')").fetchone()[0]
             invoice_total = connection.execute("select coalesce(sum(total_cents - amount_paid_cents), 0) from invoices where status in ('Open', 'Overdue')").fetchone()[0]
             overdue_count = connection.execute("select count(*) from invoices where status = 'Overdue'").fetchone()[0]
@@ -602,12 +669,88 @@ class App(BaseHTTPRequestHandler):
         <div class="grid">
             <article class="metric"><strong>{customer_count}</strong><span>Customers</span></article>
             <article class="metric"><strong>{request_count}</strong><span>New Requests</span></article>
+            <article class="metric"><strong>{estimate_count}</strong><span>Active Estimates</span></article>
             <article class="metric"><strong>{job_count}</strong><span>Open Jobs</span></article>
             <article class="metric"><strong>{dollars(invoice_total)}</strong><span>Open Invoices</span></article>
             <article class="metric danger-metric"><strong>{overdue_count}</strong><span>Overdue Invoices</span><small>{dollars(overdue_total)} past due</small></article>
         </div>
         """
         self.respond(page("Dashboard", body, user))
+
+    def employees(self):
+        user = self.current_user()
+        with db() as connection:
+            employees = connection.execute(
+                """
+                select id, name, email, role, created_at
+                from users
+                where role in ('admin', 'employee')
+                order by role, name
+                """
+            ).fetchall()
+        rows = "".join(
+            f"""
+            <tr>
+                <td>{esc(employee['name'])}</td>
+                <td>{esc(employee['email'])}</td>
+                <td>{status_badge(employee['role'].title())}</td>
+                <td>{esc(employee['created_at'])}</td>
+            </tr>
+            """
+            for employee in employees
+        )
+        body = f"""
+        <div class="heading-row"><h1>Employees</h1><a class="button" href="/employees/new">Add Employee</a></div>
+        <table>
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Created</th></tr></thead>
+            <tbody>{rows}</tbody>
+        </table>
+        """
+        self.respond(page("Employees", body, user))
+
+    def new_employee(self):
+        user = self.current_user()
+        role_options = "".join(f"<option value='{role}'>{esc(role.title())}</option>" for role in STAFF_ROLES)
+        if self.command == "POST":
+            data = self.form_data()
+            role = data.get("role")
+            if role not in STAFF_ROLES:
+                self.respond("Invalid employee role.", HTTPStatus.BAD_REQUEST)
+                return
+            password = data.get("password", "")
+            if len(password) < 8:
+                body = "<div class='notice danger'>Temporary password must be at least 8 characters.</div>" + self.employee_form(role_options)
+                self.respond(page("Add Employee", body, user))
+                return
+            salt, password_hash = hash_password(password)
+            try:
+                with db() as connection:
+                    connection.execute(
+                        """
+                        insert into users (name, email, role, password_salt, password_hash, created_at)
+                        values (?, ?, ?, ?, ?, ?)
+                        """,
+                        (data.get("name"), data.get("email"), role, salt, password_hash, now()),
+                    )
+            except sqlite3.IntegrityError:
+                body = "<div class='notice danger'>An account already exists for that email.</div>" + self.employee_form(role_options)
+                self.respond(page("Add Employee", body, user))
+                return
+            self.redirect("/employees")
+            return
+        self.respond(page("Add Employee", self.employee_form(role_options), user))
+
+    def employee_form(self, role_options):
+        return f"""
+        <h1>Add Employee</h1>
+        <form method="post" class="form">
+            <label>Name <input name="name" required></label>
+            <label>Email <input name="email" type="email" required></label>
+            <label>Role <select name="role" required>{role_options}</select></label>
+            <label>Temporary Password <input name="password" type="password" minlength="8" required></label>
+            <button>Save Employee</button>
+        </form>
+        """
 
     def customers(self):
         user = self.current_user()
@@ -645,6 +788,335 @@ class App(BaseHTTPRequestHandler):
         </form>
         """
         self.respond(page("Add Customer", body, user))
+
+    def estimates(self):
+        user = self.current_user()
+        with db() as connection:
+            estimates = connection.execute(
+                """
+                select estimates.*, customers.name as customer_name,
+                       coalesce(sum(estimate_line_items.total_cents), 0) as total_cents,
+                       jobs.id as job_id
+                from estimates
+                join customers on customers.id = estimates.customer_id
+                left join estimate_line_items on estimate_line_items.estimate_id = estimates.id
+                left join jobs on jobs.estimate_id = estimates.id
+                group by estimates.id
+                order by estimates.updated_at desc
+                """
+            ).fetchall()
+        rows = "".join(
+            f"""
+            <tr>
+                <td><a href="/estimates/view?id={estimate['id']}">{esc(estimate['estimate_number'])}</a></td>
+                <td>{esc(estimate['customer_name'])}</td>
+                <td>{status_badge(estimate['status'])}</td>
+                <td>{esc(estimate['expires_at'])}</td>
+                <td>{dollars(estimate_total(estimate))}</td>
+                <td>{'<a class="button secondary compact" href="/jobs">View Job</a>' if estimate['job_id'] else ''}</td>
+            </tr>
+            """
+            for estimate in estimates
+        )
+        body = f"""
+        <div class="heading-row"><h1>Estimates</h1><a class="button" href="/estimates/new">Create Estimate</a></div>
+        <table>
+            <thead><tr><th>Estimate</th><th>Customer</th><th>Status</th><th>Expires</th><th>Total</th><th>Job</th></tr></thead>
+            <tbody>{rows}</tbody>
+        </table>
+        """
+        self.respond(page("Estimates", body, user))
+
+    def new_estimate(self, parsed):
+        user = self.current_user()
+        request_id = (parse_qs(parsed.query).get("request_id") or [""])[0]
+        source = None
+        if request_id:
+            with db() as connection:
+                source = connection.execute("select * from estimate_requests where id = ?", (request_id,)).fetchone()
+
+        if self.command == "POST":
+            data = self.form_data()
+            try:
+                unit_price_cents = parse_money_to_cents(data.get("amount"))
+            except ValueError:
+                self.respond("Estimate amount must be a number.", HTTPStatus.BAD_REQUEST)
+                return
+            if unit_price_cents <= 0:
+                self.respond("Estimate amount must be greater than zero.", HTTPStatus.BAD_REQUEST)
+                return
+
+            with db() as connection:
+                customer = connection.execute(
+                    "select * from customers where lower(email) = lower(?) limit 1",
+                    (data.get("email"),),
+                ).fetchone()
+                if customer:
+                    customer_id = customer["id"]
+                    connection.execute(
+                        "update customers set name = ?, phone = ?, address = ? where id = ?",
+                        (data.get("name"), data.get("phone"), data.get("address"), customer_id),
+                    )
+                else:
+                    cursor = connection.execute(
+                        "insert into customers (name, email, phone, address, created_at) values (?, ?, ?, ?, ?)",
+                        (data.get("name"), data.get("email"), data.get("phone"), data.get("address"), now()),
+                    )
+                    customer_id = cursor.lastrowid
+
+                next_id = connection.execute("select coalesce(max(id), 0) + 1 from estimates").fetchone()[0]
+                estimate_number = f"EST-{next_id:05d}"
+                created_at = now()
+                cursor = connection.execute(
+                    """
+                    insert into estimates
+                    (customer_id, source_request_id, estimate_number, status, notes, terms, expires_at, created_at, updated_at)
+                    values (?, ?, ?, 'Draft', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        customer_id,
+                        data.get("source_request_id") or None,
+                        estimate_number,
+                        data.get("notes"),
+                        data.get("terms"),
+                        data.get("expires_at"),
+                        created_at,
+                        created_at,
+                    ),
+                )
+                estimate_id = cursor.lastrowid
+                connection.execute(
+                    """
+                    insert into estimate_line_items
+                    (estimate_id, description, quantity, unit_price_cents, total_cents)
+                    values (?, ?, 1, ?, ?)
+                    """,
+                    (estimate_id, data.get("service_name"), unit_price_cents, unit_price_cents),
+                )
+                if data.get("source_request_id"):
+                    connection.execute(
+                        "update estimate_requests set status = 'Estimate Created' where id = ?",
+                        (data.get("source_request_id"),),
+                    )
+            self.redirect(f"/estimates/view?id={estimate_id}")
+            return
+
+        with db() as connection:
+            services = connection.execute("select * from services order by name").fetchall()
+
+        selected_service = source["requested_service"] if source else ""
+        service_options = "".join(
+            f"<option {'selected' if service['name'] == selected_service else ''}>{esc(service['name'])}</option>"
+            for service in services
+        )
+        if selected_service and selected_service not in {service["name"] for service in services}:
+            service_options = f"<option selected>{esc(selected_service)}</option>" + service_options
+        expires_at = add_days(30)
+        body = f"""
+        <h1>Create Estimate</h1>
+        <form method="post" class="form">
+            <input type="hidden" name="source_request_id" value="{esc(request_id)}">
+            <label>Customer Name <input name="name" value="{esc(source['name'] if source else '')}" required></label>
+            <label>Email <input name="email" type="email" value="{esc(source['email'] if source else '')}" required></label>
+            <label>Phone <input name="phone" value="{esc(source['phone'] if source else '')}"></label>
+            <label>Service Address <input name="address" value="{esc(source['address'] if source else '')}"></label>
+            <label>Service <select name="service_name" required>{service_options}</select></label>
+            <label>Estimate Amount <input name="amount" inputmode="decimal" placeholder="0.00" required></label>
+            <label>Expires <input name="expires_at" type="date" value="{esc(expires_at)}"></label>
+            <label>Internal Notes <textarea name="notes" rows="4">{esc(source['message'] if source else '')}</textarea></label>
+            <label>Customer Terms <textarea name="terms" rows="3">Estimate valid for 30 days. Approved work will be scheduled after customer confirmation.</textarea></label>
+            <button>Save Estimate</button>
+        </form>
+        """
+        self.respond(page("Create Estimate", body, user))
+
+    def estimate_detail(self, parsed):
+        user = self.current_user()
+        estimate_id = (parse_qs(parsed.query).get("id") or [""])[0]
+        with db() as connection:
+            estimate = connection.execute(
+                """
+                select estimates.*, customers.name as customer_name, customers.email, customers.phone, customers.address,
+                       coalesce(sum(estimate_line_items.total_cents), 0) as total_cents,
+                       jobs.id as job_id
+                from estimates
+                join customers on customers.id = estimates.customer_id
+                left join estimate_line_items on estimate_line_items.estimate_id = estimates.id
+                left join jobs on jobs.estimate_id = estimates.id
+                where estimates.id = ?
+                group by estimates.id
+                """,
+                (estimate_id,),
+            ).fetchone()
+            if not estimate:
+                self.respond("Estimate not found.", HTTPStatus.NOT_FOUND)
+                return
+            line_items = connection.execute(
+                "select * from estimate_line_items where estimate_id = ? order by id",
+                (estimate_id,),
+            ).fetchall()
+
+        status_options = "".join(
+            f"<option {'selected' if status == estimate['status'] else ''}>{esc(status)}</option>"
+            for status in ESTIMATE_STATUSES
+        )
+        rows = "".join(
+            f"""
+            <tr>
+                <td>{esc(item['description'])}</td>
+                <td>{item['quantity']}</td>
+                <td>{dollars(item['unit_price_cents'])}</td>
+                <td>{dollars(item['total_cents'])}</td>
+            </tr>
+            """
+            for item in line_items
+        )
+        convert_panel = ""
+        if estimate["job_id"]:
+            convert_panel = "<div class='notice no-print'>This estimate has already been converted into a scheduled job.</div>"
+        elif estimate["status"] == "Approved":
+            convert_panel = f"""
+            <section class="band no-print">
+                <h2>Schedule Approved Work</h2>
+                <form method="post" action="/estimates/convert" class="form compact-form">
+                    <input type="hidden" name="estimate_id" value="{estimate['id']}">
+                    <label>Date and Time <input name="scheduled_for" type="datetime-local" required></label>
+                    <label>Job Notes <textarea name="notes" rows="3">{esc(estimate['notes'])}</textarea></label>
+                    <button>Convert to Job</button>
+                </form>
+            </section>
+            """
+        else:
+            convert_panel = "<div class='notice no-print'>Approve this estimate before scheduling the work.</div>"
+
+        body = f"""
+        <div class="invoice-actions no-print">
+            <a class="button secondary compact" href="/estimates">Back to Estimates</a>
+            <button onclick="window.print()">Print Estimate</button>
+        </div>
+        <article class="invoice-sheet">
+            <header class="invoice-header">
+                <div class="invoice-company">
+                    {logo()}
+                    <p>{esc(COMPANY_ADDRESS)}<br>{esc(COMPANY_PHONE)}<br>{esc(COMPANY_EMAIL)}</p>
+                </div>
+                <div class="invoice-title">
+                    <h1>Estimate</h1>
+                    <dl>
+                        <div><dt>Estimate #</dt><dd>{esc(estimate['estimate_number'])}</dd></div>
+                        <div><dt>Status</dt><dd>{status_badge(estimate['status'])}</dd></div>
+                        <div><dt>Expires</dt><dd>{esc(estimate['expires_at'])}</dd></div>
+                    </dl>
+                </div>
+            </header>
+            <section class="invoice-parties two-column">
+                <div>
+                    <h2>Customer</h2>
+                    <p><strong>{esc(estimate['customer_name'])}</strong><br>{esc(estimate['address'])}</p>
+                </div>
+                <div>
+                    <h2>Contact</h2>
+                    <p>{esc(estimate['phone'])}<br>{esc(estimate['email'])}</p>
+                </div>
+            </section>
+            <table class="invoice-lines">
+                <thead><tr><th>Description</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+            <section class="invoice-summary">
+                <div class="invoice-notes">
+                    <h2>Notes and Terms</h2>
+                    <p>{esc(estimate['notes'])}</p>
+                    <p>{esc(estimate['terms'])}</p>
+                </div>
+                <div class="invoice-totals">
+                    <div class="total-row total"><span>Estimate Total</span><strong>{dollars(estimate_total(estimate))}</strong></div>
+                </div>
+            </section>
+        </article>
+        <section class="payment-panel no-print">
+            <h2>Estimate Status</h2>
+            <form method="post" action="/estimates/status" class="inline-form">
+                <input type="hidden" name="estimate_id" value="{estimate['id']}">
+                <select name="status">{status_options}</select>
+                <button>Update Status</button>
+            </form>
+        </section>
+        {convert_panel}
+        """
+        self.respond(page(f"Estimate {estimate['estimate_number']}", body, user))
+
+    def update_estimate_status(self):
+        if self.command != "POST":
+            self.redirect("/estimates")
+            return
+        data = self.form_data()
+        status = data.get("status")
+        if status not in ESTIMATE_STATUSES:
+            self.respond("Invalid estimate status.", HTTPStatus.BAD_REQUEST)
+            return
+        with db() as connection:
+            connection.execute(
+                "update estimates set status = ?, updated_at = ? where id = ?",
+                (status, now(), data.get("estimate_id")),
+            )
+        self.redirect(f"/estimates/view?id={data.get('estimate_id')}")
+
+    def convert_estimate(self):
+        if self.command != "POST":
+            self.redirect("/estimates")
+            return
+        data = self.form_data()
+        estimate_id = data.get("estimate_id")
+        with db() as connection:
+            estimate = connection.execute(
+                """
+                select estimates.*, customers.name as customer_name
+                from estimates
+                join customers on customers.id = estimates.customer_id
+                where estimates.id = ?
+                """,
+                (estimate_id,),
+            ).fetchone()
+            if not estimate:
+                self.respond("Estimate not found.", HTTPStatus.NOT_FOUND)
+                return
+            if estimate["status"] != "Approved":
+                self.respond("Only approved estimates can be converted to jobs.", HTTPStatus.BAD_REQUEST)
+                return
+            existing_job = connection.execute("select id from jobs where estimate_id = ?", (estimate_id,)).fetchone()
+            if existing_job:
+                self.redirect("/jobs")
+                return
+            line_item = connection.execute(
+                "select * from estimate_line_items where estimate_id = ? order by id limit 1",
+                (estimate_id,),
+            ).fetchone()
+            if not line_item:
+                self.respond("Estimate needs at least one line item before it can be scheduled.", HTTPStatus.BAD_REQUEST)
+                return
+            notes = f"Created from {estimate['estimate_number']}."
+            if data.get("notes"):
+                notes += f" {data.get('notes')}"
+            connection.execute(
+                """
+                insert into jobs (customer_id, estimate_id, service_name, scheduled_for, notes, created_at)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    estimate["customer_id"],
+                    estimate["id"],
+                    line_item["description"],
+                    data.get("scheduled_for"),
+                    notes,
+                    now(),
+                ),
+            )
+            connection.execute(
+                "update estimates set status = 'Converted', updated_at = ? where id = ?",
+                (now(), estimate["id"]),
+            )
+        self.redirect("/jobs")
 
     def jobs(self):
         user = self.current_user()
@@ -1147,12 +1619,21 @@ class App(BaseHTTPRequestHandler):
         with db() as connection:
             requests = connection.execute("select * from estimate_requests order by created_at desc").fetchall()
         rows = "".join(
-            f"<tr><td>{esc(row['created_at'])}</td><td>{esc(row['name'])}</td><td>{esc(row['email'])}</td><td>{esc(row['requested_service'])}</td><td>{esc(row['status'])}</td></tr>"
+            f"""
+            <tr>
+                <td>{esc(row['created_at'])}</td>
+                <td>{esc(row['name'])}</td>
+                <td>{esc(row['email'])}</td>
+                <td>{esc(row['requested_service'])}</td>
+                <td>{status_badge(row['status'])}</td>
+                <td><a class="button secondary compact" href="/estimates/new?request_id={row['id']}">Create Estimate</a></td>
+            </tr>
+            """
             for row in requests
         )
         body = f"""
         <h1>Website Requests</h1>
-        <table><thead><tr><th>Created</th><th>Name</th><th>Email</th><th>Service</th><th>Status</th></tr></thead><tbody>{rows}</tbody></table>
+        <table><thead><tr><th>Created</th><th>Name</th><th>Email</th><th>Service</th><th>Status</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table>
         """
         self.respond(page("Requests", body, user))
 

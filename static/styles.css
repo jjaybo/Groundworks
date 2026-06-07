@@ -281,6 +281,24 @@ th {
     background: #f7dddd;
 }
 
+.status-approved,
+.status-converted {
+    color: #245f27;
+    background: #dff3df;
+}
+
+.status-draft,
+.status-sent {
+    color: #36616e;
+    background: #dceff3;
+}
+
+.status-declined,
+.status-needs-changes {
+    color: var(--danger);
+    background: #f7dddd;
+}
+
 .muted,
 small {
     color: var(--muted);
@@ -324,6 +342,10 @@ small {
 .payment-form label:nth-of-type(4),
 .payment-form label:nth-of-type(5) {
     grid-column: span 3;
+}
+
+.compact-form {
+    max-width: 560px;
 }
 
 .payment-history {
@@ -403,6 +425,10 @@ small {
     grid-template-columns: repeat(3, 1fr);
     gap: 18px;
     padding: 26px 0;
+}
+
+.invoice-parties.two-column {
+    grid-template-columns: repeat(2, 1fr);
 }
 
 .invoice-parties h2,
@@ -519,6 +545,7 @@ small {
 
     .invoice-header,
     .invoice-parties,
+    .invoice-parties.two-column,
     .invoice-summary,
     .signature-grid,
     .payment-form {
