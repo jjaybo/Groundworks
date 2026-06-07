@@ -34,6 +34,7 @@ ESTIMATE_DISCLAIMER = (
     "This estimate is subject to change upon in-person inspection of the property. "
     "No work will be performed without prior customer approval."
 )
+SERVICE_AGREEMENT_TITLE = "Lawn Care Service Agreement"
 
 
 def db():
@@ -175,6 +176,21 @@ def init_database():
                 note text,
                 paid_at text not null,
                 created_at text not null
+            );
+
+            create table if not exists service_agreements (
+                id integer primary key autoincrement,
+                customer_id integer not null references customers(id),
+                job_id integer references jobs(id),
+                status text not null default 'Pending Customer Signature',
+                customer_name text,
+                customer_signature text,
+                customer_signed_at text,
+                technician_name text,
+                technician_signature text,
+                technician_signed_at text,
+                created_at text not null,
+                updated_at text not null
             );
             """
         )
@@ -329,6 +345,16 @@ def estimate_total(estimate):
     return estimate["total_cents"] or 0
 
 
+def agreement_status(agreement):
+    if not agreement:
+        return "Not Started"
+    if agreement["customer_signed_at"] and agreement["technician_signed_at"]:
+        return "Fully Signed"
+    if agreement["customer_signed_at"]:
+        return "Pending Technician Signature"
+    return "Pending Customer Signature"
+
+
 def status_badge(status):
     class_name = esc(status).lower().replace(" ", "-")
     return f"<span class='status status-{class_name}'>{esc(status)}</span>"
@@ -341,6 +367,80 @@ def esc(value):
 def logo():
     return f"""
     <img src="/static/official-logo.svg" alt="{esc(COMPANY_NAME)} - {esc(COMPANY_TAGLINE)}" class="official-logo">
+    """
+
+
+def service_agreement_body(customer, agreement=None, job=None):
+    effective_date = (agreement["created_at"].split(" ")[0] if agreement else dt.date.today().isoformat())
+    customer_signature = agreement["customer_signature"] if agreement and agreement["customer_signature"] else "_______________________________"
+    customer_name = agreement["customer_name"] if agreement and agreement["customer_name"] else customer["name"]
+    customer_date = agreement["customer_signed_at"].split(" ")[0] if agreement and agreement["customer_signed_at"] else "________________"
+    technician_signature = agreement["technician_signature"] if agreement and agreement["technician_signature"] else "_______________________________"
+    technician_name = agreement["technician_name"] if agreement and agreement["technician_name"] else "_______________________________"
+    technician_date = agreement["technician_signed_at"].split(" ")[0] if agreement and agreement["technician_signed_at"] else "________________"
+    job_note = ""
+    if job:
+        job_note = f"""
+        <p><strong>Related Job:</strong> {esc(job['service_name'])} scheduled for {esc(job['scheduled_for'])}</p>
+        """
+    return f"""
+    <article class="legal-page agreement-page">
+        <h1>J &amp; E Professional Services</h1>
+        <h2>{esc(SERVICE_AGREEMENT_TITLE)}</h2>
+        <p class="muted">Effective Date: {esc(effective_date)}</p>
+        <p>This Lawn Care Service Agreement ("Agreement") is entered into between J and E Professional Services ("Company") and the undersigned customer ("Customer").</p>
+
+        <section><h2>1. Scope of Services</h2><p>The services to be performed under this Agreement shall be those specifically listed in the service descriptions, estimates, work orders, invoices, scheduling software, customer portal, or other written documentation approved by the Customer. The Company shall perform only those services specifically authorized by the Customer. Company technicians are not authorized to perform additional services or incur additional charges without prior notification to and approval from the Customer.</p></section>
+        <section><h2>2. Payment Terms</h2><p>Payment is due immediately upon completion of services unless otherwise agreed in writing. Any deposits paid prior to completion of services, as well as any credits currently on the Customer's account, shall be applied toward the balance due. Any overpayments shall be credited to the Customer's account unless the Customer expressly requests a refund. Account credits do not expire and shall remain on the Customer's account indefinitely until applied to future services or refunded upon request. Returned payments, declined transactions, chargebacks, or non-sufficient funds (NSF) payments may be subject to a fee of up to $35.00 or the maximum amount permitted by applicable law. Any balance remaining unpaid more than fifteen (15) days after the service date may be subject to a late fee of the lesser of one and one-half percent (1.5%) per month, eighteen percent (18%) per year, or the maximum rate permitted by law. The Customer agrees to pay all reasonable costs incurred in collecting past-due amounts, including collection agency fees, court costs, filing fees, and reasonable attorney's fees where permitted by law. The Company reserves the right to suspend or discontinue future services until all outstanding balances have been paid in full.</p></section>
+        <section><h2>3. Service Concerns and Property Damage</h2><p>Customer satisfaction is important to us. Any concerns regarding services performed should be reported at the time of service whenever possible, or within twenty-four (24) hours of service completion so that corrective action may be taken promptly. The Company understands that extenuating circumstances may occur and will consider such circumstances on a case-by-case basis. Concerns or complaints first reported more than forty-eight (48) hours after service completion may result in additional charges if corrective work is requested. If any damage to the Customer's property is believed to have been caused by a representative of the Company, the Customer must notify the Company as soon as reasonably feasible, preferably immediately upon discovery, so that the Company may investigate and take appropriate corrective action. Failure to promptly report alleged damage may limit the Company's ability to verify the cause and extent of the issue.</p></section>
+        <section><h2>4. Animals, Access, and Property Conditions</h2><p>The Customer agrees to notify the Company of any animals located on the property prior to the scheduled service. All animals must be properly secured during service. The Customer shall notify the Company of any gates, fences, locks, access restrictions, or other barriers that may affect service and shall ensure access is available at the scheduled service time. The Customer is responsible for maintaining a reasonably safe and accessible property and for notifying the Company of any known hazards, concealed obstacles, unstable ground conditions, underground structures, irrigation components, utility lines, septic systems, wells, sinkholes, aggressive animals, hazardous materials, or other conditions that may affect personnel, equipment, or service quality. If services cannot be completed due to unsecured animals, denied access, inaccessible work areas, unsafe conditions, or other circumstances within the Customer's control, the Company may reschedule the service and assess a $35.00 rescheduling fee.</p></section>
+        <section><h2>5. Scheduling, Weather, and Delays</h2><p>The Company understands that the Customer's time is valuable and will make every reasonable effort to arrive as scheduled. However, weather conditions, equipment issues, traffic conditions, emergencies, prior job delays, and other unforeseen circumstances may occasionally require service delays or rescheduling. The Company reserves the right to postpone, delay, or reschedule services due to rain, lightning, severe weather, saturated ground conditions, unsafe working conditions, equipment failures, or other circumstances that may adversely affect safety or service quality. Weather-related rescheduling initiated by the Company shall not result in additional charges to the Customer. The Company will make reasonable efforts to notify the Customer as early as possible of any delays or scheduling changes.</p></section>
+        <section><h2>6. Property Markings and Customer Responsibilities</h2><p>The Customer is responsible for identifying and marking the location of sprinkler heads, irrigation systems, invisible pet fences, underground utilities, low-voltage wiring, septic systems, drainage systems, landscape lighting, survey markers, hidden structures, and other items that may be concealed by vegetation, mulch, soil, debris, or ground cover. The Customer is also responsible for removing or identifying toys, hoses, pet items, decorations, tools, lawn furniture, and other movable property from service areas prior to service. The Company shall not be responsible for damage to hidden, unmarked, improperly installed, buried, obscured, or undisclosed items, nor for damage caused by objects left within service areas that could reasonably interfere with mowing, trimming, edging, blowing, or related services.</p></section>
+        <section><h2>7. Lawn and Landscape Results</h2><p>The Customer acknowledges that lawn, landscape, and property conditions are influenced by factors beyond the Company's control, including weather, soil conditions, pests, disease, irrigation practices, foot traffic, pet activity, prior maintenance practices, and environmental conditions. Unless expressly stated in writing, the Company does not guarantee specific growth rates, turf density, color, weed elimination, pest elimination, plant survival, or other aesthetic results.</p></section>
+        <section><h2>8. Limitation of Liability</h2><p>The Company will exercise reasonable care in performing services but shall not be responsible for conditions that are hidden, inaccessible, undisclosed, improperly installed, deteriorated, defective, or otherwise unknown at the time services are performed. The Company shall not be liable for damages resulting from pre-existing property conditions, acts of nature, weather events, concealed debris, underground structures, defective irrigation systems, or circumstances beyond its reasonable control. While reasonable precautions are taken during mowing, trimming, and related operations, hidden rocks, sticks, debris, and other foreign objects may occasionally become airborne. The Company shall not be responsible for damage caused by concealed or undisclosed debris that could not reasonably have been identified before service. To the fullest extent permitted by applicable law, the Company's liability for any claim arising from services performed shall be limited to the amount paid by the Customer for the specific service giving rise to the claim.</p></section>
+        <section><h2>9. Right to Refuse or Stop Work</h2><p>The Company reserves the right to refuse, postpone, or discontinue services when conditions are determined to be unsafe, hazardous, unlawful, inaccessible, or likely to result in injury, property damage, equipment damage, or environmental harm. Such conditions may include, but are not limited to, severe weather, lightning, flooding, unsecured animals, aggressive behavior, unsafe terrain, hazardous materials, lack of required access, or threats to employee safety.</p></section>
+        <section><h2>10. Photographs and Documentation</h2><p>The Customer authorizes the Company to take photographs of the property before, during, and after services for documentation, quality control, training, dispute resolution, and marketing purposes. The Company will make reasonable efforts to avoid photographing individuals, personal identifying information, or areas unrelated to the services being performed.</p></section>
+        <section><h2>11. Recurring Services</h2><p>For customers enrolled in recurring maintenance services, services shall continue according to the agreed service schedule until canceled by either party. Either party may terminate recurring services upon reasonable notice. Pricing for recurring services may be adjusted periodically to reflect changes in labor, fuel, materials, equipment costs, market conditions, or service requirements. Customers will be notified before any pricing changes take effect.</p></section>
+        <section><h2>12. Force Majeure</h2><p>The Company shall not be liable for delays, interruptions, or failure to perform services resulting from circumstances beyond its reasonable control, including severe weather, natural disasters, labor shortages, fuel shortages, equipment failures, governmental actions, utility outages, public emergencies, or other unforeseen events.</p></section>
+        <section><h2>13. Indemnification</h2><p>To the fullest extent permitted by law, the Customer agrees to indemnify and hold harmless the Company, its owners, employees, contractors, and representatives from claims, damages, losses, liabilities, and expenses arising from undisclosed property conditions, inaccurate information provided by the Customer, unsafe property conditions, violations of applicable laws, or circumstances beyond the Company's control.</p></section>
+        <section><h2>14. Electronic Communications and Signatures</h2><p>The Customer agrees that estimates, invoices, photographs, notices, approvals, authorizations, signatures, and other communications may be transmitted and received electronically, including by email, text message, electronic signature platform, customer portal, or other electronic means. Electronic signatures and electronic approvals shall have the same force and effect as original handwritten signatures to the fullest extent permitted by law.</p></section>
+        <section><h2>15. Term and Continuing Effect</h2><p>This Agreement shall become effective upon the Customer's acceptance of services, approval of an estimate, execution of this Agreement, authorization of work, or scheduling of services through any written or electronic means. Unless terminated by either party, this Agreement shall remain in full force and effect and shall govern all services performed by the Company for the Customer, including future estimates, invoices, work orders, recurring maintenance schedules, and additional services authorized by the Customer. Each estimate, work order, invoice, service request, recurring service schedule, or other authorization for services shall be incorporated into and governed by this Agreement. Either party may terminate this Agreement at any time upon notice to the other party. Termination shall not affect obligations arising from services previously performed or balances previously incurred. The Company reserves the right to modify this Agreement from time to time. Any revised version shall become effective upon notice to the Customer and shall apply to future services performed thereafter.</p></section>
+        <section><h2>16. Governing Law and General Provisions</h2><p>This Agreement shall be governed by the laws of the State of South Carolina. If any provision of this Agreement is found to be invalid or unenforceable, the remaining provisions shall remain in full force and effect. This Agreement, together with all approved estimates, invoices, work orders, service schedules, and written amendments, constitutes the entire agreement between the parties and supersedes all prior discussions, understandings, and agreements regarding the services provided.</p></section>
+        <section><h2>17. Acceptance</h2><p>By signing this Agreement, approving an estimate, scheduling services, requesting services, accepting services, authorizing work through any written or electronic means, or making payment for services, the Customer acknowledges that they have read, understood, and agree to be bound by the terms and conditions of this Agreement.</p></section>
+
+        <section>
+            <h2>Customer Information</h2>
+            <p>
+                Customer Name: {esc(customer['name'])}<br>
+                Property Address: {esc(customer['address'])}<br>
+                Phone Number: {esc(customer['phone'])}<br>
+                Email Address: {esc(customer['email'])}
+            </p>
+            {job_note}
+        </section>
+        <section>
+            <h2>Description of Services</h2>
+            <p>Services to be performed are described in the approved estimate, work order, invoice, service schedule, or line-item descriptions generated through the Company's scheduling and invoicing systems, all of which are incorporated into this Agreement by reference.</p>
+        </section>
+        <section>
+            <h2>Signatures</h2>
+            <p><strong>IMPORTANT:</strong> By signing below, requesting services, approving an estimate, scheduling services, or accepting services from J and E Professional Services, Customer agrees to all terms and conditions contained in this Agreement, including future services performed unless this Agreement is terminated in accordance with its terms.</p>
+            <div class="agreement-signatures">
+                <div>
+                    <span>Customer Signature</span>
+                    <strong>{esc(customer_signature)}</strong>
+                    <small>Printed Name: {esc(customer_name)}</small>
+                    <small>Date: {esc(customer_date)}</small>
+                </div>
+                <div>
+                    <span>Company Representative</span>
+                    <strong>{esc(technician_signature)}</strong>
+                    <small>Printed Name: {esc(technician_name)}</small>
+                    <small>Date: {esc(technician_date)}</small>
+                </div>
+            </div>
+        </section>
+    </article>
     """
 
 
@@ -425,6 +525,12 @@ class App(BaseHTTPRequestHandler):
             elif path == "/portal":
                 self.require_user()
                 self.customer_portal()
+            elif path == "/portal/agreement":
+                self.require_user()
+                self.customer_service_agreement()
+            elif path == "/portal/agreement/sign":
+                self.require_user()
+                self.sign_customer_service_agreement()
             elif path == "/portal/estimates/view":
                 self.require_user()
                 self.customer_estimate_detail(parsed)
@@ -440,6 +546,12 @@ class App(BaseHTTPRequestHandler):
             elif path == "/customers/new":
                 if self.require_staff():
                     self.new_customer()
+            elif path == "/service-agreements/view":
+                if self.require_staff():
+                    self.staff_service_agreement(parsed)
+            elif path == "/service-agreements/technician-sign":
+                if self.require_staff():
+                    self.sign_technician_service_agreement()
             elif path == "/estimates":
                 if self.require_staff():
                     self.estimates()
@@ -545,6 +657,29 @@ class App(BaseHTTPRequestHandler):
                 "select * from customers where lower(email) = lower(?) order by id limit 1",
                 (user["email"],),
             ).fetchone()
+
+    def ensure_service_agreement(self, connection, customer_id, job_id=None):
+        if job_id:
+            agreement = connection.execute(
+                "select * from service_agreements where customer_id = ? and job_id = ? order by id desc limit 1",
+                (customer_id, job_id),
+            ).fetchone()
+        else:
+            agreement = connection.execute(
+                "select * from service_agreements where customer_id = ? and job_id is null order by id desc limit 1",
+                (customer_id,),
+            ).fetchone()
+        if agreement:
+            return agreement
+        created_at = now()
+        cursor = connection.execute(
+            """
+            insert into service_agreements (customer_id, job_id, status, created_at, updated_at)
+            values (?, ?, 'Pending Customer Signature', ?, ?)
+            """,
+            (customer_id, job_id, created_at, created_at),
+        )
+        return connection.execute("select * from service_agreements where id = ?", (cursor.lastrowid,)).fetchone()
 
     def respond(self, content, status=HTTPStatus.OK, content_type="text/html"):
         encoded = content.encode()
@@ -857,6 +992,7 @@ class App(BaseHTTPRequestHandler):
                 """,
                 (customer["id"],),
             ).fetchall()
+            agreement = self.ensure_service_agreement(connection, customer["id"])
 
         estimate_rows = "".join(
             f"""
@@ -903,6 +1039,7 @@ class App(BaseHTTPRequestHandler):
                 <article class="metric"><strong>{len(jobs)}</strong><span>Jobs</span></article>
                 <article class="metric"><strong>{len(invoices)}</strong><span>Invoices</span></article>
             </div>
+            <p><a class="button compact" href="/portal/agreement">View and Sign Service Agreement</a> {status_badge(agreement_status(agreement))}</p>
         </section>
         <section class="band">
             <h2>Estimates</h2>
@@ -918,6 +1055,81 @@ class App(BaseHTTPRequestHandler):
         </section>
         """
         self.respond(page("My Portal", body, user))
+
+    def customer_service_agreement(self):
+        user = self.current_user()
+        customer = self.customer_for_user(user)
+        if not customer:
+            self.respond("Customer record not found.", HTTPStatus.NOT_FOUND)
+            return
+        with db() as connection:
+            agreement = self.ensure_service_agreement(connection, customer["id"])
+        signature_panel = ""
+        if not agreement["customer_signed_at"]:
+            signature_panel = f"""
+            <section class="payment-panel no-print">
+                <h2>Customer Signature Required</h2>
+                <form method="post" action="/portal/agreement/sign" class="form compact-form">
+                    <input type="hidden" name="agreement_id" value="{agreement['id']}">
+                    <label>Printed Name <input name="customer_name" value="{esc(customer['name'])}" required></label>
+                    <label>Digital Signature <input name="customer_signature" placeholder="Type your full legal name" required></label>
+                    <label class="checkbox-label"><input type="checkbox" name="accepted_terms" value="yes" required> I have read and agree to the Lawn Care Service Agreement.</label>
+                    <button>Sign Agreement</button>
+                </form>
+            </section>
+            """
+        else:
+            signature_panel = f"<section class='notice no-print'>Customer signature recorded on {esc(agreement['customer_signed_at'])}.</section>"
+        body = f"""
+        <div class="invoice-actions no-print">
+            <a class="button secondary compact" href="/portal">Back to Portal</a>
+            <button onclick="window.print()">Print Agreement</button>
+        </div>
+        {signature_panel}
+        {service_agreement_body(customer, agreement)}
+        """
+        self.respond(page("Service Agreement", body, user))
+
+    def sign_customer_service_agreement(self):
+        if self.command != "POST":
+            self.redirect("/portal")
+            return
+        user = self.current_user()
+        customer = self.customer_for_user(user)
+        if not customer:
+            self.respond("Customer record not found.", HTTPStatus.NOT_FOUND)
+            return
+        data = self.form_data()
+        if data.get("accepted_terms") != "yes":
+            self.respond("Agreement signature requires accepting the service agreement.", HTTPStatus.BAD_REQUEST)
+            return
+        customer_name = data.get("customer_name")
+        customer_signature = data.get("customer_signature")
+        if not customer_name or not customer_signature:
+            self.respond("Printed name and digital signature are required.", HTTPStatus.BAD_REQUEST)
+            return
+        with db() as connection:
+            agreement = connection.execute(
+                "select * from service_agreements where id = ? and customer_id = ?",
+                (data.get("agreement_id"), customer["id"]),
+            ).fetchone()
+            if not agreement:
+                self.respond("Agreement not found.", HTTPStatus.NOT_FOUND)
+                return
+            if agreement["customer_signed_at"]:
+                self.redirect("/portal/agreement")
+                return
+            signed_at = now()
+            new_status = "Fully Signed" if agreement["technician_signed_at"] else "Pending Technician Signature"
+            connection.execute(
+                """
+                update service_agreements
+                set customer_name = ?, customer_signature = ?, customer_signed_at = ?, status = ?, updated_at = ?
+                where id = ? and customer_id = ?
+                """,
+                (customer_name, customer_signature, signed_at, new_status, signed_at, agreement["id"], customer["id"]),
+            )
+        self.redirect("/portal/agreement")
 
     def customer_estimate_detail(self, parsed):
         user = self.current_user()
@@ -1282,14 +1494,38 @@ class App(BaseHTTPRequestHandler):
     def customers(self):
         user = self.current_user()
         with db() as connection:
-            rows = connection.execute("select * from customers order by created_at desc").fetchall()
+            rows = connection.execute(
+                """
+                select customers.*, service_agreements.id as agreement_id,
+                       service_agreements.status as agreement_status
+                from customers
+                left join service_agreements
+                  on service_agreements.customer_id = customers.id
+                 and service_agreements.job_id is null
+                 and service_agreements.id = (
+                    select max(id) from service_agreements
+                    where customer_id = customers.id and job_id is null
+                 )
+                order by customers.created_at desc
+                """
+            ).fetchall()
         table = "".join(
-            f"<tr><td>{esc(row['name'])}</td><td>{esc(row['email'])}</td><td>{esc(row['phone'])}</td><td>{esc(row['address'])}</td><td>{dollars(row['balance_cents'])}</td></tr>"
+            f"""
+            <tr>
+                <td>{esc(row['name'])}</td>
+                <td>{esc(row['email'])}</td>
+                <td>{esc(row['phone'])}</td>
+                <td>{esc(row['address'])}</td>
+                <td>{dollars(row['balance_cents'])}</td>
+                <td>{status_badge(row['agreement_status'] or 'Not Started')}</td>
+                <td><a class="button secondary compact" href="/service-agreements/view?customer_id={row['id']}">Agreement</a></td>
+            </tr>
+            """
             for row in rows
         )
         body = f"""
         <div class="heading-row"><h1>Customers</h1><a class="button" href="/customers/new">Add Customer</a></div>
-        <table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Address</th><th>Balance</th></tr></thead><tbody>{table}</tbody></table>
+        <table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Address</th><th>Balance</th><th>Agreement</th><th>Action</th></tr></thead><tbody>{table}</tbody></table>
         """
         self.respond(page("Customers", body, user))
 
@@ -1315,6 +1551,79 @@ class App(BaseHTTPRequestHandler):
         </form>
         """
         self.respond(page("Add Customer", body, user))
+
+    def staff_service_agreement(self, parsed):
+        user = self.current_user()
+        params = parse_qs(parsed.query)
+        customer_id = (params.get("customer_id") or [""])[0]
+        job_id = (params.get("job_id") or [""])[0] or None
+        with db() as connection:
+            if job_id and not customer_id:
+                job = connection.execute("select * from jobs where id = ?", (job_id,)).fetchone()
+                if not job:
+                    self.respond("Job not found.", HTTPStatus.NOT_FOUND)
+                    return
+                customer_id = job["customer_id"]
+            customer = connection.execute("select * from customers where id = ?", (customer_id,)).fetchone()
+            if not customer:
+                self.respond("Customer not found.", HTTPStatus.NOT_FOUND)
+                return
+            agreement = self.ensure_service_agreement(connection, customer["id"], job_id)
+            job = None
+            if agreement["job_id"]:
+                job = connection.execute("select * from jobs where id = ?", (agreement["job_id"],)).fetchone()
+
+        technician_panel = ""
+        if not agreement["technician_signed_at"]:
+            technician_panel = f"""
+            <section class="payment-panel no-print">
+                <h2>Technician Signature</h2>
+                <form method="post" action="/service-agreements/technician-sign" class="form compact-form">
+                    <input type="hidden" name="agreement_id" value="{agreement['id']}">
+                    <label>Technician Name <input name="technician_name" value="{esc(user['name'])}" required></label>
+                    <label>Technician Signature <input name="technician_signature" placeholder="Type your full legal name" required></label>
+                    <button>Sign as Technician</button>
+                </form>
+            </section>
+            """
+        else:
+            technician_panel = f"<section class='notice no-print'>Technician signature recorded on {esc(agreement['technician_signed_at'])}.</section>"
+        body = f"""
+        <div class="invoice-actions no-print">
+            <a class="button secondary compact" href="/customers">Back to Customers</a>
+            <button onclick="window.print()">Print Agreement</button>
+        </div>
+        {technician_panel}
+        {service_agreement_body(customer, agreement, job)}
+        """
+        self.respond(page("Service Agreement", body, user))
+
+    def sign_technician_service_agreement(self):
+        if self.command != "POST":
+            self.redirect("/customers")
+            return
+        data = self.form_data()
+        technician_name = data.get("technician_name")
+        technician_signature = data.get("technician_signature")
+        if not technician_name or not technician_signature:
+            self.respond("Technician name and signature are required.", HTTPStatus.BAD_REQUEST)
+            return
+        with db() as connection:
+            agreement = connection.execute("select * from service_agreements where id = ?", (data.get("agreement_id"),)).fetchone()
+            if not agreement:
+                self.respond("Agreement not found.", HTTPStatus.NOT_FOUND)
+                return
+            signed_at = now()
+            new_status = "Fully Signed" if agreement["customer_signed_at"] else "Pending Customer Signature"
+            connection.execute(
+                """
+                update service_agreements
+                set technician_name = ?, technician_signature = ?, technician_signed_at = ?, status = ?, updated_at = ?
+                where id = ?
+                """,
+                (technician_name, technician_signature, signed_at, new_status, signed_at, agreement["id"]),
+            )
+        self.redirect(f"/service-agreements/view?customer_id={agreement['customer_id']}")
 
     def estimates(self):
         user = self.current_user()
@@ -1661,9 +1970,12 @@ class App(BaseHTTPRequestHandler):
         with db() as connection:
             jobs = connection.execute(
                 """
-                select jobs.*, customers.name as customer_name, invoices.id as invoice_id, invoices.invoice_number
+                select jobs.*, customers.name as customer_name, invoices.id as invoice_id, invoices.invoice_number,
+                       service_agreements.id as agreement_id,
+                       service_agreements.status as agreement_status
                 from jobs join customers on customers.id = jobs.customer_id
                 left join invoices on invoices.job_id = jobs.id
+                left join service_agreements on service_agreements.job_id = jobs.id
                 order by scheduled_for
                 """
             ).fetchall()
@@ -1701,6 +2013,10 @@ class App(BaseHTTPRequestHandler):
             """
         else:
             invoice_control = "<span class='muted'>Complete job before invoicing</span>"
+        agreement_control = f"""
+        <a class="button secondary compact" href="/service-agreements/view?job_id={job['id']}">Service Agreement</a>
+        <small>{esc(job['agreement_status'] or 'Not Started')}</small>
+        """
 
         return f"""
         <tr>
@@ -1717,6 +2033,7 @@ class App(BaseHTTPRequestHandler):
                 </form>
                 {complete_form}
                 {invoice_control}
+                {agreement_control}
             </td>
         </tr>
         """

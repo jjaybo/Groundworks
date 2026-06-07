@@ -190,6 +190,39 @@ table,
     margin-bottom: 8px;
 }
 
+.agreement-page h1 {
+    color: var(--green);
+    text-transform: uppercase;
+}
+
+.agreement-signatures {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-top: 20px;
+}
+
+.agreement-signatures div {
+    display: grid;
+    gap: 8px;
+    min-height: 130px;
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.agreement-signatures span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.agreement-signatures strong {
+    min-height: 36px;
+    font-size: 20px;
+}
+
 .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -619,6 +652,7 @@ small {
     .invoice-parties,
     .invoice-parties.two-column,
     .invoice-summary,
+    .agreement-signatures,
     .signature-grid,
     .payment-form {
         grid-template-columns: 1fr;
