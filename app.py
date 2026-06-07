@@ -388,12 +388,37 @@ def logo():
     """
 
 
+def signature_field(name, label, placeholder="Type full legal name"):
+    safe_name = esc(name)
+    return f"""
+    <fieldset class="signature-field" data-signature-field>
+        <legend>{esc(label)}</legend>
+        <input type="hidden" name="{safe_name}" data-signature-value required>
+        <label>Typed Signature <input data-signature-typed placeholder="{esc(placeholder)}"></label>
+        <div class="signature-preview empty" data-signature-preview></div>
+        <canvas class="signature-canvas" width="640" height="180" data-signature-canvas></canvas>
+        <div class="signature-actions">
+            <button type="button" class="button secondary compact" data-signature-use-typed>Use Typed Signature</button>
+            <button type="button" class="button secondary compact" data-signature-clear>Clear</button>
+        </div>
+    </fieldset>
+    """
+
+
+def signature_display(value):
+    if not value:
+        return "<span class='signature-line'>_______________________________</span>"
+    if str(value).startswith("data:image/"):
+        return f"<img class='signature-image' src='{esc(value)}' alt='Signature'>"
+    return f"<span class='typed-signature'>{esc(value)}</span>"
+
+
 def service_agreement_body(customer, agreement=None, job=None):
     effective_date = (agreement["created_at"].split(" ")[0] if agreement else dt.date.today().isoformat())
-    customer_signature = agreement["customer_signature"] if agreement and agreement["customer_signature"] else "_______________________________"
+    customer_signature = agreement["customer_signature"] if agreement and agreement["customer_signature"] else ""
     customer_name = agreement["customer_name"] if agreement and agreement["customer_name"] else customer["name"]
     customer_date = agreement["customer_signed_at"].split(" ")[0] if agreement and agreement["customer_signed_at"] else "________________"
-    technician_signature = agreement["technician_signature"] if agreement and agreement["technician_signature"] else "_______________________________"
+    technician_signature = agreement["technician_signature"] if agreement and agreement["technician_signature"] else ""
     technician_name = agreement["technician_name"] if agreement and agreement["technician_name"] else "_______________________________"
     technician_date = agreement["technician_signed_at"].split(" ")[0] if agreement and agreement["technician_signed_at"] else "________________"
     job_note = ""
@@ -446,13 +471,13 @@ def service_agreement_body(customer, agreement=None, job=None):
             <div class="agreement-signatures">
                 <div>
                     <span>Customer Signature</span>
-                    <strong>{esc(customer_signature)}</strong>
+                    <strong>{signature_display(customer_signature)}</strong>
                     <small>Printed Name: {esc(customer_name)}</small>
                     <small>Date: {esc(customer_date)}</small>
                 </div>
                 <div>
                     <span>Company Representative</span>
-                    <strong>{esc(technician_signature)}</strong>
+                    <strong>{signature_display(technician_signature)}</strong>
                     <small>Printed Name: {esc(technician_name)}</small>
                     <small>Date: {esc(technician_date)}</small>
                 </div>
@@ -492,6 +517,119 @@ def page(title, body, user=None):
     else:
         nav += '<a href="/login">Staff Login</a>'
 
+    signature_script = """
+        <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            document.querySelectorAll("[data-signature-field]").forEach((field) => {
+                const canvas = field.querySelector("[data-signature-canvas]");
+                const hidden = field.querySelector("[data-signature-value]");
+                const typed = field.querySelector("[data-signature-typed]");
+                const preview = field.querySelector("[data-signature-preview]");
+                const useTyped = field.querySelector("[data-signature-use-typed]");
+                const clearButton = field.querySelector("[data-signature-clear]");
+                if (!canvas || !hidden || !typed || !preview) return;
+                const context = canvas.getContext("2d");
+                let drawing = false;
+                let hasDrawing = false;
+
+                function resizeCanvas() {
+                    const ratio = window.devicePixelRatio || 1;
+                    const rect = canvas.getBoundingClientRect();
+                    if (!rect.width || !rect.height) return;
+                    canvas.width = Math.round(rect.width * ratio);
+                    canvas.height = Math.round(rect.height * ratio);
+                    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+                    context.lineCap = "round";
+                    context.lineJoin = "round";
+                    context.lineWidth = 2.4;
+                    context.strokeStyle = "#1e2820";
+                }
+
+                function point(event) {
+                    const rect = canvas.getBoundingClientRect();
+                    const source = event.touches ? event.touches[0] : event;
+                    return { x: source.clientX - rect.left, y: source.clientY - rect.top };
+                }
+
+                function setTypedSignature() {
+                    const value = typed.value.trim();
+                    hidden.value = value;
+                    preview.textContent = value;
+                    preview.classList.toggle("empty", !value);
+                }
+
+                function setDrawnSignature() {
+                    if (!hasDrawing) return;
+                    hidden.value = canvas.toDataURL("image/png");
+                    preview.textContent = "";
+                    preview.classList.remove("empty");
+                }
+
+                resizeCanvas();
+                window.addEventListener("resize", resizeCanvas);
+
+                typed.addEventListener("input", () => {
+                    if (!hasDrawing) setTypedSignature();
+                });
+                useTyped.addEventListener("click", () => {
+                    context.clearRect(0, 0, canvas.width, canvas.height);
+                    hasDrawing = false;
+                    setTypedSignature();
+                });
+                clearButton.addEventListener("click", () => {
+                    context.clearRect(0, 0, canvas.width, canvas.height);
+                    hasDrawing = false;
+                    hidden.value = "";
+                    typed.value = "";
+                    preview.textContent = "";
+                    preview.classList.add("empty");
+                });
+
+                canvas.addEventListener("mousedown", (event) => {
+                    drawing = true;
+                    hasDrawing = true;
+                    const p = point(event);
+                    context.beginPath();
+                    context.moveTo(p.x, p.y);
+                });
+                canvas.addEventListener("mousemove", (event) => {
+                    if (!drawing) return;
+                    const p = point(event);
+                    context.lineTo(p.x, p.y);
+                    context.stroke();
+                    setDrawnSignature();
+                });
+                ["mouseup", "mouseleave"].forEach((name) => {
+                    canvas.addEventListener(name, () => {
+                        if (drawing) setDrawnSignature();
+                        drawing = false;
+                    });
+                });
+                canvas.addEventListener("touchstart", (event) => {
+                    event.preventDefault();
+                    drawing = true;
+                    hasDrawing = true;
+                    const p = point(event);
+                    context.beginPath();
+                    context.moveTo(p.x, p.y);
+                }, { passive: false });
+                canvas.addEventListener("touchmove", (event) => {
+                    event.preventDefault();
+                    if (!drawing) return;
+                    const p = point(event);
+                    context.lineTo(p.x, p.y);
+                    context.stroke();
+                    setDrawnSignature();
+                }, { passive: false });
+                canvas.addEventListener("touchend", () => {
+                    if (drawing) setDrawnSignature();
+                    drawing = false;
+                });
+            });
+        });
+        </script>
+    """
+
     return f"""<!doctype html>
     <html lang="en">
     <head>
@@ -514,6 +652,7 @@ def page(title, body, user=None):
                 &nbsp; | &nbsp; <a href="/estimate-terms">Estimate Terms</a>
             </p>
         </footer>
+        {signature_script}
     </body>
     </html>"""
 
@@ -1263,7 +1402,7 @@ class App(BaseHTTPRequestHandler):
                 <form method="post" action="/portal/agreement/sign" class="form compact-form">
                     <input type="hidden" name="agreement_id" value="{agreement['id']}">
                     <label>Printed Name <input name="customer_name" value="{esc(customer['name'])}" required></label>
-                    <label>Digital Signature <input name="customer_signature" placeholder="Type your full legal name" required></label>
+                    {signature_field("customer_signature", "Digital Signature")}
                     <label class="checkbox-label"><input type="checkbox" name="accepted_terms" value="yes" required> I have read and agree to the Lawn Care Service Agreement.</label>
                     <button>Sign Agreement</button>
                 </form>
@@ -1369,7 +1508,7 @@ class App(BaseHTTPRequestHandler):
                 <form method="post" action="/portal/estimates/approve" class="form compact-form">
                     <input type="hidden" name="estimate_id" value="{estimate['id']}">
                     <label>Your Name <input name="approval_name" value="{esc(customer['name'])}" required></label>
-                    <label>Signature <input name="approval_signature" placeholder="Type your full legal name" required></label>
+                    {signature_field("approval_signature", "Signature")}
                     <label class="checkbox-label"><input type="checkbox" name="accepted_terms" value="yes" required> I approve this estimate, agree to the <a href="/estimate-terms">Estimate Terms</a>, and understand approved work is governed by the service agreement.</label>
                     <button>Approve Estimate</button>
                 </form>
@@ -1386,7 +1525,7 @@ class App(BaseHTTPRequestHandler):
             approval_block = f"""
             <section class="signature-record">
                 <h2>Customer Approval</h2>
-                <p><strong>{esc(estimate['approval_signature'])}</strong></p>
+                <p><strong>{signature_display(estimate['approval_signature'])}</strong></p>
                 <p>Approved by {esc(estimate['approval_name'])} on {esc(estimate['approved_at'])}</p>
             </section>
             """
@@ -1772,7 +1911,7 @@ class App(BaseHTTPRequestHandler):
                 <form method="post" action="/service-agreements/technician-sign" class="form compact-form">
                     <input type="hidden" name="agreement_id" value="{agreement['id']}">
                     <label>Technician Name <input name="technician_name" value="{esc(user['name'])}" required></label>
-                    <label>Technician Signature <input name="technician_signature" placeholder="Type your full legal name" required></label>
+                    {signature_field("technician_signature", "Technician Signature")}
                     <button>Sign as Technician</button>
                 </form>
             </section>
@@ -2003,7 +2142,7 @@ class App(BaseHTTPRequestHandler):
             approval_block = f"""
             <section class="signature-record">
                 <h2>Customer Approval</h2>
-                <p><strong>{esc(estimate['approval_signature'])}</strong></p>
+                <p><strong>{signature_display(estimate['approval_signature'])}</strong></p>
                 <p>Approved by {esc(estimate['approval_name'])} on {esc(estimate['approved_at'])}</p>
             </section>
             """
@@ -2258,9 +2397,9 @@ class App(BaseHTTPRequestHandler):
                     <label>Issues Found <textarea name="completion_issues" rows="3" placeholder="Property concerns, damage found before service, access problems, or none."></textarea></label>
                     <label>Follow-Up Needed <textarea name="completion_follow_up" rows="3" placeholder="Recommended next steps, future service suggestions, or none."></textarea></label>
                     <label>Technician Name <input name="technician_name" value="{esc(user['name'])}" required></label>
-                    <label>Technician Signature <input name="technician_signature" placeholder="Type full legal name" required></label>
+                    {signature_field("technician_signature", "Technician Signature")}
                     <label>Customer Name <input name="customer_completion_name" value="{esc(job['customer_name'])}" required></label>
-                    <label>Customer Approval Signature <input name="customer_completion_signature" placeholder="Customer types full legal name" required></label>
+                    {signature_field("customer_completion_signature", "Customer Approval Signature", "Customer types full legal name")}
                     <label class="checkbox-label"><input type="checkbox" name="customer_approved_completion" value="yes" required> Customer confirms the listed work was completed and approves this completion record.</label>
                     <button>Complete Job With Signatures</button>
                 </form>
@@ -2281,13 +2420,13 @@ class App(BaseHTTPRequestHandler):
                 <div class="agreement-signatures">
                     <div>
                         <span>Technician Signature</span>
-                        <strong>{esc(job['technician_signature'])}</strong>
+                        <strong>{signature_display(job['technician_signature'])}</strong>
                         <small>Printed Name: {esc(job['technician_name'])}</small>
                         <small>Date: {esc(job['technician_signed_at'])}</small>
                     </div>
                     <div>
                         <span>Customer Completion Approval</span>
-                        <strong>{esc(job['customer_completion_signature'])}</strong>
+                        <strong>{signature_display(job['customer_completion_signature'])}</strong>
                         <small>Printed Name: {esc(job['customer_completion_name'])}</small>
                         <small>Date: {esc(job['customer_completion_signed_at'])}</small>
                     </div>
