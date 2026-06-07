@@ -450,6 +450,7 @@ def page(title, body, user=None):
     <a href="/services">Services & Pricing</a>
     <a href="/request-estimate">Request Estimate</a>
     <a href="/signup">Create Account</a>
+    <a href="/portal">Customer Portal</a>
     """
     if user and user["role"] == "customer":
         nav += """
@@ -913,7 +914,8 @@ class App(BaseHTTPRequestHandler):
 
     def login_form(self):
         return """
-        <h1>Staff Login</h1>
+        <h1>Account Login</h1>
+        <p class="muted">Customers and staff can log in here. Customer accounts open the customer portal.</p>
         <form method="post" class="form">
             <label>Email <input name="email" type="email" required></label>
             <label>Password <input name="password" type="password" required></label>
