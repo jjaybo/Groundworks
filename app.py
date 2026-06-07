@@ -34,6 +34,7 @@ DEMO_SERVICE_NAMES = ["Lawn Mowing", "Mulch Installation", "Leaf Cleanup", "Recu
 PAYMENT_METHODS = ["Cash", "Check", "Card", "Other"]
 INVOICE_STATUSES = ["Open", "Overdue", "Paid"]
 STAFF_ROLES = ["admin", "employee"]
+SETTLEMENT_STATUSES = ["Submitted", "Verified", "Needs Review"]
 ESTIMATE_STATUSES = ["Draft", "Sent", "Approved", "Needs Changes", "Declined", "Converted"]
 ESTIMATE_DISCLAIMER = (
     "This estimate is subject to change upon in-person inspection of the property. "
@@ -203,6 +204,27 @@ def init_database():
                 created_at text not null
             );
 
+            create table if not exists settlement_reports (
+                id integer primary key autoincrement,
+                reported_by_user_id integer not null references users(id),
+                reported_by_name text not null,
+                report_date text not null,
+                cash_expected_cents integer not null default 0,
+                check_expected_cents integer not null default 0,
+                card_expected_cents integer not null default 0,
+                other_expected_cents integer not null default 0,
+                cash_counted_cents integer not null default 0,
+                check_counted_cents integer not null default 0,
+                notes text,
+                status text not null default 'Submitted',
+                admin_note text,
+                verified_by_user_id integer references users(id),
+                verified_by_name text,
+                verified_at text,
+                submitted_at text not null,
+                unique(reported_by_user_id, report_date)
+            );
+
             create table if not exists service_agreements (
                 id integer primary key autoincrement,
                 customer_id integer not null references customers(id),
@@ -358,6 +380,29 @@ def parse_money_to_cents(value):
     if not cleaned:
         return 0
     return int(round(float(cleaned) * 100))
+
+
+def settlement_expected_totals(connection, user_id, report_date):
+    rows = connection.execute(
+        """
+        select method, coalesce(sum(amount_cents), 0) as total_cents
+        from payments
+        where recorded_by_user_id = ?
+          and paid_at = ?
+        group by method
+        """,
+        (user_id, report_date),
+    ).fetchall()
+    totals = {method: 0 for method in PAYMENT_METHODS}
+    for row in rows:
+        totals[row["method"]] = row["total_cents"]
+    return totals
+
+
+def settlement_cash_check_difference(report):
+    expected = report["cash_expected_cents"] + report["check_expected_cents"]
+    counted = report["cash_counted_cents"] + report["check_counted_cents"]
+    return counted - expected
 
 
 def safe_filename(filename):
@@ -615,6 +660,7 @@ def page(title, body, user=None):
         <a href="/calendar">Calendar</a>
         <a href="/jobs">Jobs</a>
         <a href="/invoices">Invoices</a>
+        <a href="/settlements">Settlements</a>
         <a href="/inquiries">Requests</a>
         """
         if user["role"] == "admin":
@@ -872,6 +918,12 @@ class App(BaseHTTPRequestHandler):
             elif path == "/payments/create":
                 if self.require_staff():
                     self.create_payment()
+            elif path == "/settlements":
+                if self.require_staff():
+                    self.settlements(parsed)
+            elif path == "/settlements/verify":
+                if self.require_admin():
+                    self.verify_settlement()
             elif path == "/inquiries":
                 if self.require_staff():
                     self.inquiries()
@@ -3015,6 +3067,266 @@ class App(BaseHTTPRequestHandler):
                 (amount_cents, invoice["customer_id"]),
             )
         self.redirect(f"/invoices/view?id={invoice_id}")
+
+    def settlements(self, parsed):
+        user = self.current_user()
+        if self.command == "POST":
+            self.submit_settlement()
+            return
+
+        query = parse_qs(parsed.query)
+        selected_date = (query.get("date") or [dt.date.today().isoformat()])[0]
+        with db() as connection:
+            staff = connection.execute(
+                """
+                select id, name, role
+                from users
+                where role in ('admin', 'employee')
+                order by name
+                """
+            ).fetchall()
+            selected_user_id = user["id"]
+            if user["role"] == "admin":
+                try:
+                    selected_user_id = int((query.get("employee_id") or [user["id"]])[0])
+                except ValueError:
+                    selected_user_id = user["id"]
+            selected_staff = connection.execute("select * from users where id = ?", (selected_user_id,)).fetchone()
+            if not selected_staff or selected_staff["role"] not in STAFF_ROLES:
+                selected_user_id = user["id"]
+                selected_staff = user
+
+            expected = settlement_expected_totals(connection, selected_user_id, selected_date)
+            report = connection.execute(
+                """
+                select *
+                from settlement_reports
+                where reported_by_user_id = ? and report_date = ?
+                """,
+                (selected_user_id, selected_date),
+            ).fetchone()
+            payments = connection.execute(
+                """
+                select payments.*, invoices.invoice_number, customers.name as customer_name
+                from payments
+                join invoices on invoices.id = payments.invoice_id
+                join customers on customers.id = payments.customer_id
+                where payments.recorded_by_user_id = ?
+                  and payments.paid_at = ?
+                order by payments.created_at desc, payments.id desc
+                """,
+                (selected_user_id, selected_date),
+            ).fetchall()
+            pending_reports = connection.execute(
+                """
+                select settlement_reports.*, users.email
+                from settlement_reports
+                join users on users.id = settlement_reports.reported_by_user_id
+                where settlement_reports.status in ('Submitted', 'Needs Review')
+                order by settlement_reports.report_date desc, settlement_reports.submitted_at desc
+                """
+            ).fetchall()
+
+        employee_options = "".join(
+            f"<option value='{employee['id']}' {'selected' if employee['id'] == selected_user_id else ''}>{esc(employee['name'])} ({esc(employee['role'].title())})</option>"
+            for employee in staff
+        )
+        employee_filter = ""
+        if user["role"] == "admin":
+            employee_filter = f"""
+            <label>Employee
+                <select name="employee_id">{employee_options}</select>
+            </label>
+            """
+
+        payment_rows = "".join(
+            f"""
+            <tr>
+                <td><a href="/invoices/view?id={payment['invoice_id']}">{esc(payment['invoice_number'])}</a></td>
+                <td>{esc(payment['customer_name'])}</td>
+                <td>{esc(payment['method'])}</td>
+                <td>{esc(payment['reference'])}</td>
+                <td>{dollars(payment['amount_cents'])}</td>
+            </tr>
+            """
+            for payment in payments
+        ) or "<tr><td colspan='5'>No payments recorded for this date.</td></tr>"
+
+        cash_value = (report["cash_counted_cents"] if report else expected["Cash"]) / 100
+        check_value = (report["check_counted_cents"] if report else expected["Check"]) / 100
+        notes_value = report["notes"] if report else ""
+        report_status = "<p class='notice'>No settlement report has been submitted for this date.</p>"
+        if report:
+            difference = settlement_cash_check_difference(report)
+            report_status = f"""
+            <p class="notice">
+                Current report: {status_badge(report['status'])}
+                Cash/check difference: <strong>{dollars(difference)}</strong>
+                Submitted: {esc(report['submitted_at'])}
+            </p>
+            """
+        submit_panel = f"""
+        <form method="post" action="/settlements" class="form">
+            <input type="hidden" name="report_date" value="{esc(selected_date)}">
+            <label>Cash Counted <input name="cash_counted" inputmode="decimal" value="{cash_value:.2f}" required></label>
+            <label>Check Total Counted <input name="check_counted" inputmode="decimal" value="{check_value:.2f}" required></label>
+            <label>Settlement Notes <textarea name="notes" rows="3">{esc(notes_value)}</textarea></label>
+            <button>Submit Settlement Report</button>
+        </form>
+        """
+        if user["role"] == "admin" and selected_user_id != user["id"]:
+            submit_panel = "<p class='notice'>Admins can review this employee's report, but only the employee can submit or resubmit their own daily settlement.</p>"
+
+        pending_body = ""
+        if user["role"] == "admin":
+            pending_rows = "".join(
+                f"""
+                <tr>
+                    <td>{esc(report['report_date'])}</td>
+                    <td>{esc(report['reported_by_name'])}</td>
+                    <td>{dollars(report['cash_expected_cents'] + report['check_expected_cents'])}</td>
+                    <td>{dollars(report['cash_counted_cents'] + report['check_counted_cents'])}</td>
+                    <td>{dollars(settlement_cash_check_difference(report))}</td>
+                    <td>{status_badge(report['status'])}</td>
+                    <td>
+                        <form method="post" action="/settlements/verify" class="inline-form">
+                            <input type="hidden" name="report_id" value="{report['id']}">
+                            <select name="status" required>
+                                <option {'selected' if report['status'] == SETTLEMENT_STATUSES[1] else ''}>{SETTLEMENT_STATUSES[1]}</option>
+                                <option {'selected' if report['status'] == SETTLEMENT_STATUSES[2] else ''}>{SETTLEMENT_STATUSES[2]}</option>
+                            </select>
+                            <input name="admin_note" placeholder="Admin note" value="{esc(report['admin_note'])}">
+                            <button class="compact">Save</button>
+                        </form>
+                    </td>
+                </tr>
+                """
+                for report in pending_reports
+            ) or "<tr><td colspan='7'>No pending settlement reports.</td></tr>"
+            pending_body = f"""
+            <section class="band">
+                <h2>Admin Review</h2>
+                <table>
+                    <thead><tr><th>Date</th><th>Employee</th><th>Expected Cash/Check</th><th>Counted</th><th>Difference</th><th>Status</th><th>Review</th></tr></thead>
+                    <tbody>{pending_rows}</tbody>
+                </table>
+            </section>
+            """
+
+        body = f"""
+        <div class="heading-row">
+            <h1>Payment Settlements</h1>
+        </div>
+        <form method="get" action="/settlements" class="form compact-form">
+            {employee_filter}
+            <label>Date <input type="date" name="date" value="{esc(selected_date)}" required></label>
+            <button>View Day</button>
+        </form>
+
+        <section class="grid">
+            <article class="metric"><strong>{dollars(expected['Cash'])}</strong><span>Expected Cash</span></article>
+            <article class="metric"><strong>{dollars(expected['Check'])}</strong><span>Expected Checks</span></article>
+            <article class="metric"><strong>{dollars(expected['Card'])}</strong><span>Card Payments</span></article>
+            <article class="metric"><strong>{dollars(expected['Other'])}</strong><span>Other Payments</span></article>
+        </section>
+
+        <section class="band">
+            <h2>{esc(selected_staff['name'])} - {esc(selected_date)}</h2>
+            {report_status}
+            {submit_panel}
+        </section>
+
+        <section class="band">
+            <h2>Payments Recorded</h2>
+            <table>
+                <thead><tr><th>Invoice</th><th>Customer</th><th>Method</th><th>Reference</th><th>Amount</th></tr></thead>
+                <tbody>{payment_rows}</tbody>
+            </table>
+        </section>
+        {pending_body}
+        """
+        self.respond(page("Payment Settlements", body, user))
+
+    def submit_settlement(self):
+        user = self.current_user()
+        data = self.form_data()
+        report_date = data.get("report_date") or dt.date.today().isoformat()
+        try:
+            cash_counted = parse_money_to_cents(data.get("cash_counted"))
+            check_counted = parse_money_to_cents(data.get("check_counted"))
+        except ValueError:
+            self.respond("Settlement amounts must be numbers.", HTTPStatus.BAD_REQUEST)
+            return
+        if cash_counted < 0 or check_counted < 0:
+            self.respond("Settlement amounts cannot be negative.", HTTPStatus.BAD_REQUEST)
+            return
+
+        with db() as connection:
+            expected = settlement_expected_totals(connection, user["id"], report_date)
+            connection.execute(
+                """
+                insert into settlement_reports
+                (reported_by_user_id, reported_by_name, report_date, cash_expected_cents, check_expected_cents,
+                 card_expected_cents, other_expected_cents, cash_counted_cents, check_counted_cents, notes,
+                 status, admin_note, verified_by_user_id, verified_by_name, verified_at, submitted_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, null, null, ?)
+                on conflict(reported_by_user_id, report_date) do update set
+                    reported_by_name = excluded.reported_by_name,
+                    cash_expected_cents = excluded.cash_expected_cents,
+                    check_expected_cents = excluded.check_expected_cents,
+                    card_expected_cents = excluded.card_expected_cents,
+                    other_expected_cents = excluded.other_expected_cents,
+                    cash_counted_cents = excluded.cash_counted_cents,
+                    check_counted_cents = excluded.check_counted_cents,
+                    notes = excluded.notes,
+                    status = excluded.status,
+                    admin_note = null,
+                    verified_by_user_id = null,
+                    verified_by_name = null,
+                    verified_at = null,
+                    submitted_at = excluded.submitted_at
+                """,
+                (
+                    user["id"],
+                    user["name"],
+                    report_date,
+                    expected["Cash"],
+                    expected["Check"],
+                    expected["Card"],
+                    expected["Other"],
+                    cash_counted,
+                    check_counted,
+                    data.get("notes"),
+                    SETTLEMENT_STATUSES[0],
+                    now(),
+                ),
+            )
+        self.redirect(f"/settlements?date={report_date}")
+
+    def verify_settlement(self):
+        user = self.current_user()
+        if self.command != "POST":
+            self.redirect("/settlements")
+            return
+        data = self.form_data()
+        status = data.get("status")
+        if status not in (SETTLEMENT_STATUSES[1], SETTLEMENT_STATUSES[2]):
+            self.respond("Invalid settlement status.", HTTPStatus.BAD_REQUEST)
+            return
+        with db() as connection:
+            report = connection.execute("select * from settlement_reports where id = ?", (data.get("report_id"),)).fetchone()
+            if not report:
+                self.respond("Settlement report not found.", HTTPStatus.NOT_FOUND)
+                return
+            connection.execute(
+                """
+                update settlement_reports
+                set status = ?, admin_note = ?, verified_by_user_id = ?, verified_by_name = ?, verified_at = ?
+                where id = ?
+                """,
+                (status, data.get("admin_note"), user["id"], user["name"], now(), report["id"]),
+            )
+        self.redirect(f"/settlements?employee_id={report['reported_by_user_id']}&date={report['report_date']}")
 
     def invoices(self):
         user = self.current_user()
