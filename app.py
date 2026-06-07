@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import csv
 import html
+import mimetypes
 import os
 import secrets
 import sqlite3
@@ -14,6 +15,8 @@ import datetime as dt
 ROOT = Path(__file__).parent
 DB_PATH = Path(os.environ.get("DB_PATH", ROOT / "groundworks.db"))
 PRICE_LIST_PATH = ROOT / "data" / "service-price-list.csv"
+UPLOAD_ROOT = ROOT / "uploads"
+JOB_PHOTO_ROOT = UPLOAD_ROOT / "job-photos"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
 SESSIONS = {}
@@ -153,6 +156,16 @@ def init_database():
                 created_at text not null
             );
 
+            create table if not exists job_photos (
+                id integer primary key autoincrement,
+                job_id integer not null references jobs(id),
+                photo_type text not null check(photo_type in ('before', 'after')),
+                file_path text not null,
+                original_filename text,
+                content_type text,
+                uploaded_at text not null
+            );
+
             create table if not exists invoices (
                 id integer primary key autoincrement,
                 customer_id integer not null references customers(id),
@@ -256,6 +269,7 @@ def init_database():
         sync_price_list(connection)
         recalculate_invoice_due_dates(connection)
         sync_invoice_statuses(connection)
+        JOB_PHOTO_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def ensure_column(connection, table, column, definition):
@@ -344,6 +358,53 @@ def parse_money_to_cents(value):
     if not cleaned:
         return 0
     return int(round(float(cleaned) * 100))
+
+
+def safe_filename(filename):
+    cleaned = "".join(char if char.isalnum() or char in ("-", "_", ".") else "-" for char in filename)
+    cleaned = cleaned.strip(".-")
+    return cleaned or "upload"
+
+
+def parse_content_disposition(value):
+    parts = [part.strip() for part in value.split(";")]
+    disposition = parts[0].lower() if parts else ""
+    params = {}
+    for part in parts[1:]:
+        if "=" in part:
+            key, raw_value = part.split("=", 1)
+            params[key.strip().lower()] = raw_value.strip().strip('"')
+    return disposition, params
+
+
+def save_job_photo_uploads(connection, job_id, files, field_name, photo_type, uploaded_at):
+    saved = []
+    for upload in files.get(field_name, []):
+        filename = (upload.get("filename") or "").strip()
+        content = upload.get("content") or b""
+        content_type = upload.get("content_type") or "application/octet-stream"
+        if not filename and not content:
+            continue
+        if not content_type.startswith("image/"):
+            raise ValueError("Job photos must be image files.")
+        original = safe_filename(filename)
+        suffix = Path(original).suffix.lower()
+        if suffix not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+            suffix = mimetypes.guess_extension(content_type) or ".jpg"
+            original = f"{Path(original).stem or 'photo'}{suffix}"
+        stored_name = f"job-{job_id}-{photo_type}-{secrets.token_hex(8)}-{original}"
+        stored_path = JOB_PHOTO_ROOT / stored_name
+        stored_path.write_bytes(content)
+        relative_path = f"uploads/job-photos/{stored_name}"
+        connection.execute(
+            """
+            insert into job_photos (job_id, photo_type, file_path, original_filename, content_type, uploaded_at)
+            values (?, ?, ?, ?, ?, ?)
+            """,
+            (job_id, photo_type, relative_path, filename, content_type, uploaded_at),
+        )
+        saved.append(relative_path)
+    return saved
 
 
 def add_days(days):
@@ -826,6 +887,8 @@ class App(BaseHTTPRequestHandler):
                 self.static_logo()
             elif path == "/static/official-logo.svg":
                 self.static_official_logo()
+            elif path.startswith("/uploads/job-photos/"):
+                self.uploaded_job_photo(path)
             else:
                 self.respond("Not found", HTTPStatus.NOT_FOUND)
         except PermissionError:
@@ -835,6 +898,48 @@ class App(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         raw = self.rfile.read(length).decode()
         return {key: values[0].strip() for key, values in parse_qs(raw).items()}
+
+    def multipart_form_data(self):
+        content_type = self.headers.get("content-type", "")
+        if "multipart/form-data" not in content_type or "boundary=" not in content_type:
+            return self.form_data(), {}
+        boundary = content_type.split("boundary=", 1)[1].strip().strip('"')
+        delimiter = ("--" + boundary).encode()
+        length = int(self.headers.get("content-length", "0"))
+        raw = self.rfile.read(length)
+        fields = {}
+        files = {}
+        for part in raw.split(delimiter):
+            part = part.strip()
+            if not part or part == b"--":
+                continue
+            if part.endswith(b"--"):
+                part = part[:-2].strip()
+            if b"\r\n\r\n" not in part:
+                continue
+            header_bytes, body = part.split(b"\r\n\r\n", 1)
+            body = body.rstrip(b"\r\n")
+            headers = {}
+            for header_line in header_bytes.decode("utf-8", errors="ignore").split("\r\n"):
+                if ":" in header_line:
+                    key, value = header_line.split(":", 1)
+                    headers[key.strip().lower()] = value.strip()
+            _, params = parse_content_disposition(headers.get("content-disposition", ""))
+            name = params.get("name")
+            filename = params.get("filename")
+            if not name:
+                continue
+            if filename:
+                files.setdefault(name, []).append(
+                    {
+                        "filename": filename,
+                        "content_type": headers.get("content-type", "application/octet-stream"),
+                        "content": body,
+                    }
+                )
+            else:
+                fields[name] = body.decode("utf-8", errors="ignore").strip()
+        return fields, files
 
     def current_user(self):
         cookie = self.headers.get("cookie", "")
@@ -2581,6 +2686,10 @@ class App(BaseHTTPRequestHandler):
                 """,
                 (job_id,),
             ).fetchone()
+            photos = connection.execute(
+                "select * from job_photos where job_id = ? order by photo_type, uploaded_at",
+                (job_id,),
+            ).fetchall()
         if not job:
             self.respond("Job not found.", HTTPStatus.NOT_FOUND)
             return
@@ -2590,12 +2699,14 @@ class App(BaseHTTPRequestHandler):
             completion_panel = f"""
             <section class="payment-panel no-print">
                 <h2>Complete Job</h2>
-                <form method="post" action="/jobs/complete" class="form">
+                <form method="post" action="/jobs/complete" class="form" enctype="multipart/form-data">
                     <input type="hidden" name="job_id" value="{job['id']}">
                     <label>Completed Services <textarea name="completion_services" rows="4" required>{esc(job['service_name'])}</textarea></label>
                     <label>Completion Notes <textarea name="completion_notes" rows="4" required></textarea></label>
                     <label>Issues Found <textarea name="completion_issues" rows="3" placeholder="Property concerns, damage found before service, access problems, or none."></textarea></label>
                     <label>Follow-Up Needed <textarea name="completion_follow_up" rows="3" placeholder="Recommended next steps, future service suggestions, or none."></textarea></label>
+                    <label>Before Photos <input name="before_photos" type="file" accept="image/*" multiple></label>
+                    <label>After Photos <input name="after_photos" type="file" accept="image/*" multiple></label>
                     <label>Technician Name <input name="technician_name" value="{esc(user['name'])}" required></label>
                     {signature_field("technician_signature", "Technician Signature")}
                     <label>Customer Name <input name="customer_completion_name" value="{esc(job['customer_name'])}" required></label>
@@ -2603,6 +2714,33 @@ class App(BaseHTTPRequestHandler):
                     <label class="checkbox-label"><input type="checkbox" name="customer_approved_completion" value="yes" required> Customer confirms the listed work was completed and approves this completion record.</label>
                     <button>Complete Job With Signatures</button>
                 </form>
+            </section>
+            """
+        photo_sections = ""
+        if photos:
+            before_cards = "".join(
+                f"<figure><img src='/{esc(photo['file_path'])}' alt='Before job photo'><figcaption>{esc(photo['original_filename'])}</figcaption></figure>"
+                for photo in photos
+                if photo["photo_type"] == "before"
+            )
+            after_cards = "".join(
+                f"<figure><img src='/{esc(photo['file_path'])}' alt='After job photo'><figcaption>{esc(photo['original_filename'])}</figcaption></figure>"
+                for photo in photos
+                if photo["photo_type"] == "after"
+            )
+            photo_sections = f"""
+            <section class="band">
+                <h2>Job Photos</h2>
+                <div class="photo-columns">
+                    <div>
+                        <h3>Before</h3>
+                        <div class="photo-grid">{before_cards or '<p class="muted">No before photos uploaded.</p>'}</div>
+                    </div>
+                    <div>
+                        <h3>After</h3>
+                        <div class="photo-grid">{after_cards or '<p class="muted">No after photos uploaded.</p>'}</div>
+                    </div>
+                </div>
             </section>
             """
         completion_record = ""
@@ -2660,6 +2798,7 @@ class App(BaseHTTPRequestHandler):
             <p>{invoice_link}</p>
         </section>
         {completion_panel}
+        {photo_sections}
         {completion_record}
         """
         self.respond(page(f"Job #{job['id']}", body, user))
@@ -2685,7 +2824,8 @@ class App(BaseHTTPRequestHandler):
         if self.command != "POST":
             self.redirect("/jobs")
             return
-        data = self.form_data()
+        data, files = self.multipart_form_data()
+        job_id = data.get("job_id")
         required_fields = [
             "completion_services",
             "completion_notes",
@@ -2699,6 +2839,10 @@ class App(BaseHTTPRequestHandler):
             return
         completed_at = now()
         with db() as connection:
+            job = connection.execute("select id from jobs where id = ?", (job_id,)).fetchone()
+            if not job:
+                self.respond("Job not found.", HTTPStatus.NOT_FOUND)
+                return
             connection.execute(
                 """
                 update jobs
@@ -2728,10 +2872,17 @@ class App(BaseHTTPRequestHandler):
                     data.get("customer_completion_name"),
                     data.get("customer_completion_signature"),
                     completed_at,
-                    data.get("job_id"),
+                    job_id,
                 ),
             )
-        self.redirect(f"/jobs/view?id={data.get('job_id')}")
+            try:
+                save_job_photo_uploads(connection, job_id, files, "before_photos", "before", completed_at)
+                save_job_photo_uploads(connection, job_id, files, "after_photos", "after", completed_at)
+            except ValueError as error:
+                connection.rollback()
+                self.respond(str(error), HTTPStatus.BAD_REQUEST)
+                return
+        self.redirect(f"/jobs/view?id={job_id}")
 
     def create_invoice(self):
         if self.command != "POST":
@@ -3180,6 +3331,50 @@ class App(BaseHTTPRequestHandler):
 
     def static_official_logo(self):
         self.respond((ROOT / "static" / "official-logo.svg").read_text(), content_type="image/svg+xml")
+
+    def uploaded_job_photo(self, path):
+        user = self.current_user()
+        if not user:
+            self.respond("Forbidden", HTTPStatus.FORBIDDEN)
+            return
+        filename = safe_filename(path.rsplit("/", 1)[-1])
+        relative_path = f"uploads/job-photos/{filename}"
+        with db() as connection:
+            photo = connection.execute(
+                """
+                select job_photos.*, jobs.customer_id
+                from job_photos
+                join jobs on jobs.id = job_photos.job_id
+                where job_photos.file_path = ?
+                """,
+                (relative_path,),
+            ).fetchone()
+        if not photo:
+            self.respond("Not found", HTTPStatus.NOT_FOUND)
+            return
+        if user["role"] == "customer":
+            customer = self.customer_for_user(user)
+            if not customer or customer["id"] != photo["customer_id"]:
+                self.respond("Forbidden", HTTPStatus.FORBIDDEN)
+                return
+        elif user["role"] not in STAFF_ROLES:
+            self.respond("Forbidden", HTTPStatus.FORBIDDEN)
+            return
+        photo_path = JOB_PHOTO_ROOT / filename
+        try:
+            resolved = photo_path.resolve()
+            if JOB_PHOTO_ROOT.resolve() not in resolved.parents or not resolved.exists():
+                self.respond("Not found", HTTPStatus.NOT_FOUND)
+                return
+            content_type = photo["content_type"] or mimetypes.guess_type(str(resolved))[0] or "application/octet-stream"
+            data = resolved.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except OSError:
+            self.respond("Not found", HTTPStatus.NOT_FOUND)
 
 
 if __name__ == "__main__":

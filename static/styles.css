@@ -755,6 +755,40 @@ small {
     margin: 0 0 8px;
 }
 
+.photo-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+}
+
+.photo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+}
+
+.photo-grid figure {
+    margin: 0;
+    overflow: hidden;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.photo-grid img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+}
+
+.photo-grid figcaption {
+    padding: 8px 10px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+}
+
 .invoice-footer {
     padding: 12px 0;
     border-top: 1px solid var(--line);
@@ -806,6 +840,7 @@ small {
     .invoice-summary,
     .agreement-signatures,
     .detail-list div,
+    .photo-columns,
     .signature-grid,
     .payment-form {
         grid-template-columns: 1fr;
