@@ -25,6 +25,8 @@ COMPANY_EMAIL = "justin@jandeprofessionalservices.com"
 COMPANY_WEBSITE = "www.jandepro.com"
 APP_NAME = "Groundworks"
 JOB_STATUSES = ["Scheduled", "In Progress", "Completed", "Invoiced", "Cancelled"]
+DEFAULT_JOB_DURATION_MINUTES = 60
+JOB_BUFFER_MINUTES = 15
 DEMO_SERVICE_NAMES = ["Lawn Mowing", "Mulch Installation", "Leaf Cleanup", "Recurring Lawn Plan"]
 PAYMENT_METHODS = ["Cash", "Check", "Card", "Other"]
 INVOICE_STATUSES = ["Open", "Overdue", "Paid"]
@@ -134,6 +136,7 @@ def init_database():
                 estimate_id integer references estimates(id),
                 service_name text not null,
                 scheduled_for text not null,
+                job_duration_minutes integer not null default 60,
                 status text not null default 'Scheduled',
                 notes text,
                 completed_at text,
@@ -207,6 +210,7 @@ def init_database():
         ensure_column(connection, "jobs", "completed_at", "text")
         ensure_column(connection, "jobs", "completion_notes", "text")
         ensure_column(connection, "jobs", "estimate_id", "integer references estimates(id)")
+        ensure_column(connection, "jobs", "job_duration_minutes", "integer not null default 60")
         ensure_column(connection, "jobs", "completion_services", "text")
         ensure_column(connection, "jobs", "completion_issues", "text")
         ensure_column(connection, "jobs", "completion_follow_up", "text")
@@ -353,6 +357,48 @@ def date_part(value):
 def add_days_to_date(value, days):
     base = dt.date.fromisoformat(date_part(value))
     return (base + dt.timedelta(days=days)).isoformat()
+
+
+def parse_datetime_local(value):
+    return dt.datetime.fromisoformat((value or "").strip())
+
+
+def job_duration_minutes(value):
+    try:
+        duration = int(value or DEFAULT_JOB_DURATION_MINUTES)
+    except ValueError:
+        duration = DEFAULT_JOB_DURATION_MINUTES
+    return max(15, duration)
+
+
+def format_time_range(start_value, duration_minutes):
+    start = parse_datetime_local(start_value)
+    end = start + dt.timedelta(minutes=job_duration_minutes(duration_minutes))
+    return f"{start.strftime('%-I:%M %p') if os.name != 'nt' else start.strftime('%I:%M %p').lstrip('0')} - {end.strftime('%-I:%M %p') if os.name != 'nt' else end.strftime('%I:%M %p').lstrip('0')}"
+
+
+def scheduling_conflict(connection, scheduled_for, duration_minutes, exclude_job_id=None):
+    requested_start = parse_datetime_local(scheduled_for)
+    requested_duration = job_duration_minutes(duration_minutes)
+    requested_end = requested_start + dt.timedelta(minutes=requested_duration)
+    jobs = connection.execute(
+        """
+        select jobs.*, customers.name as customer_name
+        from jobs
+        join customers on customers.id = jobs.customer_id
+        where jobs.status != 'Cancelled'
+          and (? is null or jobs.id != ?)
+        """,
+        (exclude_job_id, exclude_job_id),
+    ).fetchall()
+    for job in jobs:
+        existing_start = parse_datetime_local(job["scheduled_for"])
+        existing_end = existing_start + dt.timedelta(minutes=job_duration_minutes(job["job_duration_minutes"]))
+        blocked_start = existing_start - dt.timedelta(minutes=JOB_BUFFER_MINUTES)
+        blocked_end = existing_end + dt.timedelta(minutes=JOB_BUFFER_MINUTES)
+        if requested_start < blocked_end and requested_end > blocked_start:
+            return job
+    return None
 
 
 def invoice_balance(invoice):
@@ -505,6 +551,7 @@ def page(title, body, user=None):
         <a href="/dashboard">Dashboard</a>
         <a href="/customers">Customers</a>
         <a href="/estimates">Estimates</a>
+        <a href="/calendar">Calendar</a>
         <a href="/jobs">Jobs</a>
         <a href="/invoices">Invoices</a>
         <a href="/inquiries">Requests</a>
@@ -734,6 +781,9 @@ class App(BaseHTTPRequestHandler):
             elif path == "/estimates/convert":
                 if self.require_staff():
                     self.convert_estimate()
+            elif path == "/calendar":
+                if self.require_staff():
+                    self.calendar(parsed)
             elif path == "/jobs":
                 if self.require_staff():
                     self.jobs()
@@ -1885,9 +1935,18 @@ class App(BaseHTTPRequestHandler):
     def staff_service_agreement(self, parsed):
         user = self.current_user()
         params = parse_qs(parsed.query)
+        agreement_id = (params.get("agreement_id") or [""])[0]
         customer_id = (params.get("customer_id") or [""])[0]
         job_id = (params.get("job_id") or [""])[0] or None
         with db() as connection:
+            agreement = None
+            if agreement_id:
+                agreement = connection.execute("select * from service_agreements where id = ?", (agreement_id,)).fetchone()
+                if not agreement:
+                    self.respond("Agreement not found.", HTTPStatus.NOT_FOUND)
+                    return
+                customer_id = agreement["customer_id"]
+                job_id = agreement["job_id"]
             if job_id and not customer_id:
                 job = connection.execute("select * from jobs where id = ?", (job_id,)).fetchone()
                 if not job:
@@ -1898,7 +1957,8 @@ class App(BaseHTTPRequestHandler):
             if not customer:
                 self.respond("Customer not found.", HTTPStatus.NOT_FOUND)
                 return
-            agreement = self.ensure_service_agreement(connection, customer["id"], job_id)
+            if not agreement:
+                agreement = self.ensure_service_agreement(connection, customer["id"], job_id)
             job = None
             if agreement["job_id"]:
                 job = connection.execute("select * from jobs where id = ?", (agreement["job_id"],)).fetchone()
@@ -1953,7 +2013,7 @@ class App(BaseHTTPRequestHandler):
                 """,
                 (technician_name, technician_signature, signed_at, new_status, signed_at, agreement["id"]),
             )
-        self.redirect(f"/service-agreements/view?customer_id={agreement['customer_id']}")
+        self.redirect(f"/service-agreements/view?agreement_id={agreement['id']}")
 
     def estimates(self):
         user = self.current_user()
@@ -2156,6 +2216,7 @@ class App(BaseHTTPRequestHandler):
                 <form method="post" action="/estimates/convert" class="form compact-form">
                     <input type="hidden" name="estimate_id" value="{estimate['id']}">
                     <label>Date and Time <input name="scheduled_for" type="datetime-local" required></label>
+                    <label>Estimated Duration Minutes <input name="job_duration_minutes" type="number" min="15" step="15" value="{DEFAULT_JOB_DURATION_MINUTES}" required></label>
                     <label>Job Notes <textarea name="notes" rows="3">{esc(estimate['notes'])}</textarea></label>
                     <button>Convert to Job</button>
                 </form>
@@ -2245,6 +2306,12 @@ class App(BaseHTTPRequestHandler):
             return
         data = self.form_data()
         estimate_id = data.get("estimate_id")
+        duration_minutes = job_duration_minutes(data.get("job_duration_minutes"))
+        try:
+            parse_datetime_local(data.get("scheduled_for"))
+        except ValueError:
+            self.respond("Scheduled date and time must be valid.", HTTPStatus.BAD_REQUEST)
+            return
         with db() as connection:
             estimate = connection.execute(
                 """
@@ -2272,19 +2339,27 @@ class App(BaseHTTPRequestHandler):
             if not line_item:
                 self.respond("Estimate needs at least one line item before it can be scheduled.", HTTPStatus.BAD_REQUEST)
                 return
+            conflict = scheduling_conflict(connection, data.get("scheduled_for"), duration_minutes)
+            if conflict:
+                self.respond(
+                    f"That time is unavailable. It conflicts with job #{conflict['id']} for {esc(conflict['customer_name'])}, including the required {JOB_BUFFER_MINUTES}-minute buffer.",
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
             notes = f"Created from {estimate['estimate_number']}."
             if data.get("notes"):
                 notes += f" {data.get('notes')}"
             connection.execute(
                 """
-                insert into jobs (customer_id, estimate_id, service_name, scheduled_for, notes, created_at)
-                values (?, ?, ?, ?, ?, ?)
+                insert into jobs (customer_id, estimate_id, service_name, scheduled_for, job_duration_minutes, notes, created_at)
+                values (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     estimate["customer_id"],
                     estimate["id"],
                     line_item["description"],
                     data.get("scheduled_for"),
+                    duration_minutes,
                     notes,
                     now(),
                 ),
@@ -2294,6 +2369,131 @@ class App(BaseHTTPRequestHandler):
                 (now(), estimate["id"]),
             )
         self.redirect("/jobs")
+
+    def calendar(self, parsed):
+        user = self.current_user()
+        params = parse_qs(parsed.query)
+        mode = (params.get("mode") or ["day"])[0]
+        if mode not in ("day", "week", "month"):
+            mode = "day"
+        try:
+            selected_date = dt.date.fromisoformat((params.get("date") or [dt.date.today().isoformat()])[0])
+        except ValueError:
+            selected_date = dt.date.today()
+
+        if mode == "week":
+            range_start = selected_date - dt.timedelta(days=selected_date.weekday())
+            range_end = range_start + dt.timedelta(days=6)
+        elif mode == "month":
+            range_start = selected_date.replace(day=1)
+            next_month = (range_start.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+            range_end = next_month - dt.timedelta(days=1)
+        else:
+            range_start = selected_date
+            range_end = selected_date
+
+        with db() as connection:
+            jobs = connection.execute(
+                """
+                select jobs.*, customers.name as customer_name
+                from jobs
+                join customers on customers.id = jobs.customer_id
+                where date(jobs.scheduled_for) between ? and ?
+                  and jobs.status != 'Cancelled'
+                order by jobs.scheduled_for
+                """,
+                (range_start.isoformat(), range_end.isoformat()),
+            ).fetchall()
+
+        jobs_by_date = {}
+        for job in jobs:
+            jobs_by_date.setdefault(date_part(job["scheduled_for"]), []).append(job)
+
+        previous_date = selected_date - (dt.timedelta(days=1) if mode == "day" else dt.timedelta(days=7) if mode == "week" else dt.timedelta(days=31))
+        next_date = selected_date + (dt.timedelta(days=1) if mode == "day" else dt.timedelta(days=7) if mode == "week" else dt.timedelta(days=31))
+        controls = f"""
+        <div class="calendar-controls no-print">
+            <a class="button secondary compact" href="/calendar?mode={mode}&date={previous_date.isoformat()}">Previous</a>
+            <form method="get" action="/calendar" class="inline-form">
+                <input type="hidden" name="mode" value="{esc(mode)}">
+                <input type="date" name="date" value="{selected_date.isoformat()}">
+                <button>Go</button>
+            </form>
+            <a class="button secondary compact" href="/calendar?mode={mode}&date={next_date.isoformat()}">Next</a>
+            <a class="button {'secondary ' if mode != 'day' else ''}compact" href="/calendar?mode=day&date={selected_date.isoformat()}">Day</a>
+            <a class="button {'secondary ' if mode != 'week' else ''}compact" href="/calendar?mode=week&date={selected_date.isoformat()}">Week</a>
+            <a class="button {'secondary ' if mode != 'month' else ''}compact" href="/calendar?mode=month&date={selected_date.isoformat()}">Month</a>
+        </div>
+        """
+
+        if mode == "month":
+            calendar_body = self.month_calendar(selected_date, jobs_by_date)
+            title = selected_date.strftime("%B %Y")
+        elif mode == "week":
+            days = [range_start + dt.timedelta(days=offset) for offset in range(7)]
+            calendar_body = self.week_calendar(days, jobs_by_date)
+            title = f"{range_start.strftime('%b %d')} - {range_end.strftime('%b %d, %Y')}"
+        else:
+            calendar_body = self.day_calendar(selected_date, jobs_by_date.get(selected_date.isoformat(), []))
+            title = selected_date.strftime("%A, %B %d, %Y")
+
+        body = f"""
+        <div class="heading-row">
+            <h1>Calendar</h1>
+            <a class="button" href="/jobs/new">Schedule Job</a>
+        </div>
+        {controls}
+        <h2>{esc(title)}</h2>
+        {calendar_body}
+        """
+        self.respond(page("Calendar", body, user))
+
+    def calendar_job_card(self, job):
+        return f"""
+        <article class="calendar-job">
+            <strong>{esc(format_time_range(job['scheduled_for'], job['job_duration_minutes']))}</strong>
+            <span>{esc(job['customer_name'])}</span>
+            <span>{esc(job['service_name'])}</span>
+            <small>{status_badge(job['status'])}</small>
+            <a href="/jobs/view?id={job['id']}">View</a>
+        </article>
+        """
+
+    def day_calendar(self, selected_date, jobs):
+        if not jobs:
+            return "<section class='notice'>No jobs scheduled for this day.</section>"
+        cards = "".join(self.calendar_job_card(job) for job in jobs)
+        return f"<section class='calendar-list'>{cards}</section>"
+
+    def week_calendar(self, days, jobs_by_date):
+        columns = "".join(
+            f"""
+            <section class="calendar-day">
+                <h3>{day.strftime('%a')}<br>{day.strftime('%b %d')}</h3>
+                {''.join(self.calendar_job_card(job) for job in jobs_by_date.get(day.isoformat(), [])) or '<p class="muted">Open</p>'}
+            </section>
+            """
+            for day in days
+        )
+        return f"<section class='calendar-grid week-grid'>{columns}</section>"
+
+    def month_calendar(self, selected_date, jobs_by_date):
+        first = selected_date.replace(day=1)
+        start = first - dt.timedelta(days=(first.weekday() + 1) % 7)
+        cells = []
+        for offset in range(42):
+            day = start + dt.timedelta(days=offset)
+            day_jobs = jobs_by_date.get(day.isoformat(), [])
+            muted_class = " muted-month" if day.month != selected_date.month else ""
+            cells.append(
+                f"""
+                <section class="calendar-day month-day{muted_class}">
+                    <h3>{day.day}</h3>
+                    {''.join(self.calendar_job_card(job) for job in day_jobs)}
+                </section>
+                """
+            )
+        return f"<section class='calendar-grid month-grid'>{''.join(cells)}</section>"
 
     def jobs(self):
         user = self.current_user()
@@ -2349,7 +2549,7 @@ class App(BaseHTTPRequestHandler):
         <tr>
             <td>{esc(job['scheduled_for'])}</td>
             <td>{esc(job['customer_name'])}</td>
-            <td>{esc(job['service_name'])}</td>
+            <td>{esc(job['service_name'])}<br><small>{job_duration_minutes(job['job_duration_minutes'])} minutes</small></td>
             <td><span class="status">{esc(job['status'])}</span></td>
             <td>{esc(job['notes'])}<br><small>{esc(job['completion_notes'])}</small></td>
             <td>
@@ -2454,6 +2654,7 @@ class App(BaseHTTPRequestHandler):
                 <div><dt>Service Address</dt><dd>{esc(job['address'])}</dd></div>
                 <div><dt>Service</dt><dd>{esc(job['service_name'])}</dd></div>
                 <div><dt>Scheduled</dt><dd>{esc(job['scheduled_for'])}</dd></div>
+                <div><dt>Duration</dt><dd>{job_duration_minutes(job['job_duration_minutes'])} minutes</dd></div>
                 <div><dt>Notes</dt><dd>{esc(job['notes'])}</dd></div>
             </dl>
             <p>{invoice_link}</p>
@@ -2900,13 +3101,33 @@ class App(BaseHTTPRequestHandler):
         user = self.current_user()
         if self.command == "POST":
             data = self.form_data()
+            duration_minutes = job_duration_minutes(data.get("job_duration_minutes"))
+            try:
+                parse_datetime_local(data.get("scheduled_for"))
+            except ValueError:
+                self.respond("Scheduled date and time must be valid.", HTTPStatus.BAD_REQUEST)
+                return
             with db() as connection:
+                conflict = scheduling_conflict(connection, data.get("scheduled_for"), duration_minutes)
+                if conflict:
+                    self.respond(
+                        f"That time is unavailable. It conflicts with job #{conflict['id']} for {esc(conflict['customer_name'])}, including the required {JOB_BUFFER_MINUTES}-minute buffer.",
+                        HTTPStatus.BAD_REQUEST,
+                    )
+                    return
                 connection.execute(
                     """
-                    insert into jobs (customer_id, service_name, scheduled_for, notes, created_at)
-                    values (?, ?, ?, ?, ?)
+                    insert into jobs (customer_id, service_name, scheduled_for, job_duration_minutes, notes, created_at)
+                    values (?, ?, ?, ?, ?, ?)
                     """,
-                    (data.get("customer_id"), data.get("service_name"), data.get("scheduled_for"), data.get("notes"), now()),
+                    (
+                        data.get("customer_id"),
+                        data.get("service_name"),
+                        data.get("scheduled_for"),
+                        duration_minutes,
+                        data.get("notes"),
+                        now(),
+                    ),
                 )
             self.redirect("/jobs")
             return
@@ -2921,6 +3142,7 @@ class App(BaseHTTPRequestHandler):
             <label>Customer <select name="customer_id" required>{customer_options}</select></label>
             <label>Service <select name="service_name" required>{service_options}</select></label>
             <label>Date and Time <input name="scheduled_for" type="datetime-local" required></label>
+            <label>Estimated Duration Minutes <input name="job_duration_minutes" type="number" min="15" step="15" value="{DEFAULT_JOB_DURATION_MINUTES}" required></label>
             <label>Notes <textarea name="notes" rows="4"></textarea></label>
             <button>Schedule Job</button>
         </form>

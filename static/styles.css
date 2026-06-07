@@ -250,6 +250,69 @@ table,
     gap: 16px;
 }
 
+.calendar-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 18px 0;
+}
+
+.calendar-grid {
+    display: grid;
+    gap: 10px;
+}
+
+.week-grid {
+    grid-template-columns: repeat(7, minmax(130px, 1fr));
+}
+
+.month-grid {
+    grid-template-columns: repeat(7, minmax(110px, 1fr));
+}
+
+.calendar-day {
+    min-height: 150px;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.calendar-day h3 {
+    margin: 0 0 10px;
+    color: var(--green);
+    font-size: 16px;
+}
+
+.month-day {
+    min-height: 132px;
+}
+
+.muted-month {
+    opacity: 0.55;
+}
+
+.calendar-list {
+    display: grid;
+    gap: 12px;
+}
+
+.calendar-job {
+    display: grid;
+    gap: 4px;
+    margin-bottom: 8px;
+    padding: 10px;
+    background: var(--soft);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+}
+
+.calendar-job a {
+    color: var(--green);
+    font-weight: 800;
+}
+
 .card,
 .metric {
     padding: 20px;
@@ -726,6 +789,11 @@ small {
     table {
         display: block;
         overflow-x: auto;
+    }
+
+    .week-grid,
+    .month-grid {
+        grid-template-columns: 1fr;
     }
 
     .invoice-sheet {
