@@ -190,6 +190,27 @@ table,
     margin-bottom: 8px;
 }
 
+.detail-list {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+}
+
+.detail-list div {
+    display: grid;
+    grid-template-columns: 170px 1fr;
+    gap: 14px;
+}
+
+.detail-list dt {
+    color: var(--muted);
+    font-weight: 800;
+}
+
+.detail-list dd {
+    margin: 0;
+}
+
 .agreement-page h1 {
     color: var(--green);
     text-transform: uppercase;
@@ -653,6 +674,7 @@ small {
     .invoice-parties.two-column,
     .invoice-summary,
     .agreement-signatures,
+    .detail-list div,
     .signature-grid,
     .payment-form {
         grid-template-columns: 1fr;

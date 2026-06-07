@@ -138,6 +138,15 @@ def init_database():
                 notes text,
                 completed_at text,
                 completion_notes text,
+                completion_services text,
+                completion_issues text,
+                completion_follow_up text,
+                technician_name text,
+                technician_signature text,
+                technician_signed_at text,
+                customer_completion_name text,
+                customer_completion_signature text,
+                customer_completion_signed_at text,
                 created_at text not null
             );
 
@@ -198,6 +207,15 @@ def init_database():
         ensure_column(connection, "jobs", "completed_at", "text")
         ensure_column(connection, "jobs", "completion_notes", "text")
         ensure_column(connection, "jobs", "estimate_id", "integer references estimates(id)")
+        ensure_column(connection, "jobs", "completion_services", "text")
+        ensure_column(connection, "jobs", "completion_issues", "text")
+        ensure_column(connection, "jobs", "completion_follow_up", "text")
+        ensure_column(connection, "jobs", "technician_name", "text")
+        ensure_column(connection, "jobs", "technician_signature", "text")
+        ensure_column(connection, "jobs", "technician_signed_at", "text")
+        ensure_column(connection, "jobs", "customer_completion_name", "text")
+        ensure_column(connection, "jobs", "customer_completion_signature", "text")
+        ensure_column(connection, "jobs", "customer_completion_signed_at", "text")
         ensure_column(connection, "estimates", "approved_at", "text")
         ensure_column(connection, "estimates", "approval_name", "text")
         ensure_column(connection, "estimates", "approval_signature", "text")
@@ -580,6 +598,9 @@ class App(BaseHTTPRequestHandler):
             elif path == "/jobs":
                 if self.require_staff():
                     self.jobs()
+            elif path == "/jobs/view":
+                if self.require_staff():
+                    self.job_detail(parsed)
             elif path == "/jobs/new":
                 if self.require_staff():
                     self.new_job()
@@ -1181,7 +1202,7 @@ class App(BaseHTTPRequestHandler):
                 <td>{esc(job['scheduled_for'])}</td>
                 <td>{esc(job['service_name'])}</td>
                 <td>{status_badge(job['status'])}</td>
-                <td>{esc(job['completion_notes'] or job['notes'])}</td>
+                <td>{esc(job['completion_notes'] or job['notes'])}<br><small>{'Customer approved completion on ' + esc(job['customer_completion_signed_at']) if job['customer_completion_signed_at'] else ''}</small></td>
             </tr>
             """
             for job in jobs
@@ -2160,15 +2181,12 @@ class App(BaseHTTPRequestHandler):
         status_options = "".join(
             f"<option {'selected' if status == job['status'] else ''}>{esc(status)}</option>"
             for status in JOB_STATUSES
+            if status != "Completed" or job["status"] == "Completed"
         )
         complete_form = ""
         if job["status"] not in ("Completed", "Invoiced", "Cancelled"):
             complete_form = f"""
-            <form method="post" action="/jobs/complete" class="inline-form stacked">
-                <input type="hidden" name="job_id" value="{job['id']}">
-                <textarea name="completion_notes" rows="2" placeholder="Completion notes"></textarea>
-                <button>Complete Job</button>
-            </form>
+            <a class="button compact" href="/jobs/view?id={job['id']}">Complete Job</a>
             """
 
         if job["invoice_id"]:
@@ -2196,6 +2214,7 @@ class App(BaseHTTPRequestHandler):
             <td><span class="status">{esc(job['status'])}</span></td>
             <td>{esc(job['notes'])}<br><small>{esc(job['completion_notes'])}</small></td>
             <td>
+                <a class="button secondary compact" href="/jobs/view?id={job['id']}">View Job</a>
                 <form method="post" action="/jobs/status" class="inline-form">
                     <input type="hidden" name="job_id" value="{job['id']}">
                     <select name="status">{status_options}</select>
@@ -2208,6 +2227,103 @@ class App(BaseHTTPRequestHandler):
         </tr>
         """
 
+    def job_detail(self, parsed):
+        user = self.current_user()
+        job_id = (parse_qs(parsed.query).get("id") or [""])[0]
+        with db() as connection:
+            job = connection.execute(
+                """
+                select jobs.*, customers.name as customer_name, customers.email, customers.phone, customers.address,
+                       invoices.id as invoice_id, invoices.invoice_number
+                from jobs
+                join customers on customers.id = jobs.customer_id
+                left join invoices on invoices.job_id = jobs.id
+                where jobs.id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        if not job:
+            self.respond("Job not found.", HTTPStatus.NOT_FOUND)
+            return
+
+        completion_panel = ""
+        if job["status"] not in ("Completed", "Invoiced", "Cancelled"):
+            completion_panel = f"""
+            <section class="payment-panel no-print">
+                <h2>Complete Job</h2>
+                <form method="post" action="/jobs/complete" class="form">
+                    <input type="hidden" name="job_id" value="{job['id']}">
+                    <label>Completed Services <textarea name="completion_services" rows="4" required>{esc(job['service_name'])}</textarea></label>
+                    <label>Completion Notes <textarea name="completion_notes" rows="4" required></textarea></label>
+                    <label>Issues Found <textarea name="completion_issues" rows="3" placeholder="Property concerns, damage found before service, access problems, or none."></textarea></label>
+                    <label>Follow-Up Needed <textarea name="completion_follow_up" rows="3" placeholder="Recommended next steps, future service suggestions, or none."></textarea></label>
+                    <label>Technician Name <input name="technician_name" value="{esc(user['name'])}" required></label>
+                    <label>Technician Signature <input name="technician_signature" placeholder="Type full legal name" required></label>
+                    <label>Customer Name <input name="customer_completion_name" value="{esc(job['customer_name'])}" required></label>
+                    <label>Customer Approval Signature <input name="customer_completion_signature" placeholder="Customer types full legal name" required></label>
+                    <label class="checkbox-label"><input type="checkbox" name="customer_approved_completion" value="yes" required> Customer confirms the listed work was completed and approves this completion record.</label>
+                    <button>Complete Job With Signatures</button>
+                </form>
+            </section>
+            """
+        completion_record = ""
+        if job["completed_at"]:
+            completion_record = f"""
+            <section class="band">
+                <h2>Completion Record</h2>
+                <dl class="detail-list">
+                    <div><dt>Completed At</dt><dd>{esc(job['completed_at'])}</dd></div>
+                    <div><dt>Completed Services</dt><dd>{esc(job['completion_services'])}</dd></div>
+                    <div><dt>Notes</dt><dd>{esc(job['completion_notes'])}</dd></div>
+                    <div><dt>Issues Found</dt><dd>{esc(job['completion_issues'] or 'None recorded')}</dd></div>
+                    <div><dt>Follow-Up Needed</dt><dd>{esc(job['completion_follow_up'] or 'None recorded')}</dd></div>
+                </dl>
+                <div class="agreement-signatures">
+                    <div>
+                        <span>Technician Signature</span>
+                        <strong>{esc(job['technician_signature'])}</strong>
+                        <small>Printed Name: {esc(job['technician_name'])}</small>
+                        <small>Date: {esc(job['technician_signed_at'])}</small>
+                    </div>
+                    <div>
+                        <span>Customer Completion Approval</span>
+                        <strong>{esc(job['customer_completion_signature'])}</strong>
+                        <small>Printed Name: {esc(job['customer_completion_name'])}</small>
+                        <small>Date: {esc(job['customer_completion_signed_at'])}</small>
+                    </div>
+                </div>
+            </section>
+            """
+        invoice_link = ""
+        if job["invoice_id"]:
+            invoice_link = f"<a class='button secondary compact' href='/invoices/view?id={job['invoice_id']}'>View {esc(job['invoice_number'])}</a>"
+        elif job["status"] == "Completed":
+            invoice_link = "<span class='muted'>Create the invoice from the Jobs list.</span>"
+        body = f"""
+        <div class="invoice-actions no-print">
+            <a class="button secondary compact" href="/jobs">Back to Jobs</a>
+            <button onclick="window.print()">Print Job Record</button>
+        </div>
+        <section class="band">
+            <div class="heading-row">
+                <h1>Job #{job['id']}</h1>
+                {status_badge(job['status'])}
+            </div>
+            <dl class="detail-list">
+                <div><dt>Customer</dt><dd>{esc(job['customer_name'])}</dd></div>
+                <div><dt>Contact</dt><dd>{esc(job['phone'])}<br>{esc(job['email'])}</dd></div>
+                <div><dt>Service Address</dt><dd>{esc(job['address'])}</dd></div>
+                <div><dt>Service</dt><dd>{esc(job['service_name'])}</dd></div>
+                <div><dt>Scheduled</dt><dd>{esc(job['scheduled_for'])}</dd></div>
+                <div><dt>Notes</dt><dd>{esc(job['notes'])}</dd></div>
+            </dl>
+            <p>{invoice_link}</p>
+        </section>
+        {completion_panel}
+        {completion_record}
+        """
+        self.respond(page(f"Job #{job['id']}", body, user))
+
     def update_job_status(self):
         if self.command != "POST":
             self.redirect("/jobs")
@@ -2217,15 +2333,12 @@ class App(BaseHTTPRequestHandler):
         if status not in JOB_STATUSES:
             self.respond("Invalid job status", HTTPStatus.BAD_REQUEST)
             return
+        if status == "Completed":
+            self.redirect(f"/jobs/view?id={data.get('job_id')}")
+            return
         completed_at = now() if status == "Completed" else None
         with db() as connection:
-            if status == "Completed":
-                connection.execute(
-                    "update jobs set status = ?, completed_at = coalesce(completed_at, ?) where id = ?",
-                    (status, completed_at, data.get("job_id")),
-                )
-            else:
-                connection.execute("update jobs set status = ? where id = ?", (status, data.get("job_id")))
+            connection.execute("update jobs set status = ? where id = ?", (status, data.get("job_id")))
         self.redirect("/jobs")
 
     def complete_job(self):
@@ -2233,16 +2346,52 @@ class App(BaseHTTPRequestHandler):
             self.redirect("/jobs")
             return
         data = self.form_data()
+        required_fields = [
+            "completion_services",
+            "completion_notes",
+            "technician_name",
+            "technician_signature",
+            "customer_completion_name",
+            "customer_completion_signature",
+        ]
+        if data.get("customer_approved_completion") != "yes" or any(not data.get(field) for field in required_fields):
+            self.respond("Completion requires service documentation, technician signature, and customer approval signature.", HTTPStatus.BAD_REQUEST)
+            return
+        completed_at = now()
         with db() as connection:
             connection.execute(
                 """
                 update jobs
-                set status = 'Completed', completed_at = coalesce(completed_at, ?), completion_notes = ?
+                set status = 'Completed',
+                    completed_at = coalesce(completed_at, ?),
+                    completion_services = ?,
+                    completion_notes = ?,
+                    completion_issues = ?,
+                    completion_follow_up = ?,
+                    technician_name = ?,
+                    technician_signature = ?,
+                    technician_signed_at = ?,
+                    customer_completion_name = ?,
+                    customer_completion_signature = ?,
+                    customer_completion_signed_at = ?
                 where id = ?
                 """,
-                (now(), data.get("completion_notes"), data.get("job_id")),
+                (
+                    completed_at,
+                    data.get("completion_services"),
+                    data.get("completion_notes"),
+                    data.get("completion_issues"),
+                    data.get("completion_follow_up"),
+                    data.get("technician_name"),
+                    data.get("technician_signature"),
+                    completed_at,
+                    data.get("customer_completion_name"),
+                    data.get("customer_completion_signature"),
+                    completed_at,
+                    data.get("job_id"),
+                ),
             )
-        self.redirect("/jobs")
+        self.redirect(f"/jobs/view?id={data.get('job_id')}")
 
     def create_invoice(self):
         if self.command != "POST":
