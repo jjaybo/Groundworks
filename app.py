@@ -30,6 +30,10 @@ PAYMENT_METHODS = ["Cash", "Check", "Card", "Other"]
 INVOICE_STATUSES = ["Open", "Overdue", "Paid"]
 STAFF_ROLES = ["admin", "employee"]
 ESTIMATE_STATUSES = ["Draft", "Sent", "Approved", "Needs Changes", "Declined", "Converted"]
+ESTIMATE_DISCLAIMER = (
+    "This estimate is subject to change upon in-person inspection of the property. "
+    "No work will be performed without prior customer approval."
+)
 
 
 def db():
@@ -107,6 +111,9 @@ def init_database():
                 notes text,
                 terms text,
                 expires_at text,
+                approved_at text,
+                approval_name text,
+                approval_signature text,
                 created_at text not null,
                 updated_at text not null
             );
@@ -175,6 +182,9 @@ def init_database():
         ensure_column(connection, "jobs", "completed_at", "text")
         ensure_column(connection, "jobs", "completion_notes", "text")
         ensure_column(connection, "jobs", "estimate_id", "integer references estimates(id)")
+        ensure_column(connection, "estimates", "approved_at", "text")
+        ensure_column(connection, "estimates", "approval_name", "text")
+        ensure_column(connection, "estimates", "approval_signature", "text")
         ensure_column(connection, "payments", "recorded_by_user_id", "integer references users(id)")
         ensure_column(connection, "payments", "recorded_by_name", "text")
 
@@ -341,7 +351,12 @@ def page(title, body, user=None):
     <a href="/request-estimate">Request Estimate</a>
     <a href="/signup">Create Account</a>
     """
-    if user:
+    if user and user["role"] == "customer":
+        nav += """
+        <a href="/portal">My Portal</a>
+        <a href="/logout">Log Out</a>
+        """
+    elif user:
         nav += """
         <a href="/dashboard">Dashboard</a>
         <a href="/customers">Customers</a>
@@ -372,6 +387,9 @@ def page(title, body, user=None):
             <nav>{nav}</nav>
         </header>
         <main>{body}</main>
+        <footer class="site-footer">
+            <p>{esc(COMPANY_NAME)} &nbsp; | &nbsp; <a href="/privacy-policy">Privacy Policy</a></p>
+        </footer>
     </body>
     </html>"""
 
@@ -393,6 +411,8 @@ class App(BaseHTTPRequestHandler):
                 self.services()
             elif path == "/request-estimate":
                 self.request_estimate()
+            elif path == "/privacy-policy":
+                self.privacy_policy()
             elif path == "/signup":
                 self.signup()
             elif path == "/login":
@@ -402,54 +422,66 @@ class App(BaseHTTPRequestHandler):
             elif path == "/dashboard":
                 self.require_user()
                 self.dashboard()
+            elif path == "/portal":
+                self.require_user()
+                self.customer_portal()
+            elif path == "/portal/estimates/view":
+                self.require_user()
+                self.customer_estimate_detail(parsed)
+            elif path == "/portal/estimates/approve":
+                self.require_user()
+                self.approve_estimate()
+            elif path == "/portal/invoices/view":
+                self.require_user()
+                self.customer_invoice_detail(parsed)
             elif path == "/customers":
-                self.require_user()
-                self.customers()
+                if self.require_staff():
+                    self.customers()
             elif path == "/customers/new":
-                self.require_user()
-                self.new_customer()
+                if self.require_staff():
+                    self.new_customer()
             elif path == "/estimates":
-                self.require_user()
-                self.estimates()
+                if self.require_staff():
+                    self.estimates()
             elif path == "/estimates/new":
-                self.require_user()
-                self.new_estimate(parsed)
+                if self.require_staff():
+                    self.new_estimate(parsed)
             elif path == "/estimates/view":
-                self.require_user()
-                self.estimate_detail(parsed)
+                if self.require_staff():
+                    self.estimate_detail(parsed)
             elif path == "/estimates/status":
-                self.require_user()
-                self.update_estimate_status()
+                if self.require_staff():
+                    self.update_estimate_status()
             elif path == "/estimates/convert":
-                self.require_user()
-                self.convert_estimate()
+                if self.require_staff():
+                    self.convert_estimate()
             elif path == "/jobs":
-                self.require_user()
-                self.jobs()
+                if self.require_staff():
+                    self.jobs()
             elif path == "/jobs/new":
-                self.require_user()
-                self.new_job()
+                if self.require_staff():
+                    self.new_job()
             elif path == "/jobs/status":
-                self.require_user()
-                self.update_job_status()
+                if self.require_staff():
+                    self.update_job_status()
             elif path == "/jobs/complete":
-                self.require_user()
-                self.complete_job()
+                if self.require_staff():
+                    self.complete_job()
             elif path == "/invoices":
-                self.require_user()
-                self.invoices()
+                if self.require_staff():
+                    self.invoices()
             elif path == "/invoices/view":
-                self.require_user()
-                self.invoice_detail(parsed)
+                if self.require_staff():
+                    self.invoice_detail(parsed)
             elif path == "/invoices/create":
-                self.require_user()
-                self.create_invoice()
+                if self.require_staff():
+                    self.create_invoice()
             elif path == "/payments/create":
-                self.require_user()
-                self.create_payment()
+                if self.require_staff():
+                    self.create_payment()
             elif path == "/inquiries":
-                self.require_user()
-                self.inquiries()
+                if self.require_staff():
+                    self.inquiries()
             elif path == "/employees":
                 if self.require_admin():
                     self.employees()
@@ -486,6 +518,15 @@ class App(BaseHTTPRequestHandler):
         if not self.current_user():
             raise PermissionError()
 
+    def require_staff(self):
+        user = self.current_user()
+        if not user:
+            raise PermissionError()
+        if user["role"] not in STAFF_ROLES:
+            self.respond("Forbidden", HTTPStatus.FORBIDDEN)
+            return False
+        return True
+
     def require_admin(self):
         user = self.current_user()
         if not user:
@@ -494,6 +535,16 @@ class App(BaseHTTPRequestHandler):
             self.respond("Forbidden", HTTPStatus.FORBIDDEN)
             return False
         return True
+
+    def customer_for_user(self, user=None):
+        user = user or self.current_user()
+        if not user or user["role"] != "customer":
+            return None
+        with db() as connection:
+            return connection.execute(
+                "select * from customers where lower(email) = lower(?) order by id limit 1",
+                (user["email"],),
+            ).fetchone()
 
     def respond(self, content, status=HTTPStatus.OK, content_type="text/html"):
         encoded = content.encode()
@@ -545,6 +596,94 @@ class App(BaseHTTPRequestHandler):
             for service in services
         )
         self.respond(page("Services", f"<h1>Services & Pricing</h1><div class='grid'>{cards}</div>", user))
+
+    def privacy_policy(self):
+        user = self.current_user()
+        body = f"""
+        <article class="legal-page">
+            <h1>Privacy Policy</h1>
+            <p class="muted">Last updated: {dt.date.today().isoformat()}</p>
+            <section>
+                <h2>1. Information We Collect</h2>
+                <p>When you book a service or contact us, we may collect the following information:</p>
+                <ul>
+                    <li><strong>Name</strong> - your full name or business name.</li>
+                    <li><strong>Address</strong> - service address including city, state, and ZIP code.</li>
+                    <li><strong>Phone number</strong> - so we can reach you about your job.</li>
+                    <li><strong>Email address</strong> - for booking confirmations and service communications.</li>
+                    <li><strong>Service history</strong> - a record of services provided at your property.</li>
+                    <li><strong>Payment information</strong> - handled entirely by our third-party payment processor.</li>
+                </ul>
+                <p>We do not collect sensitive personal data such as Social Security numbers, driver's license numbers, or health information.</p>
+            </section>
+
+            <section>
+                <h2>2. How We Use Your Information</h2>
+                <p>Your information is used only to run our business and serve you well:</p>
+                <ul>
+                    <li><strong>Job scheduling</strong> - assigning a technician and time window for your service.</li>
+                    <li><strong>Customer communication</strong> - sending booking confirmations, day-of reminders, and follow-up messages.</li>
+                    <li><strong>Service delivery</strong> - our field technicians use your address and contact info to complete work at your property.</li>
+                    <li><strong>Payment processing</strong> - collecting payment for services rendered via our third-party processor.</li>
+                    <li><strong>Internal records</strong> - maintaining service history for warranty and quality purposes.</li>
+                </ul>
+                <p>We do not sell, rent, or share your personal information with third parties for their own marketing purposes.</p>
+            </section>
+
+            <section>
+                <h2>3. Payment Information</h2>
+                <p>J &amp; E Professional Services does not store, access, or transmit raw credit card data. All payment processing is handled by Stripe, a PCI-compliant third-party payment processor. When you pay, your card information goes directly to Stripe. It never passes through our servers in a readable form.</p>
+                <p>Stripe's privacy policy and security practices govern how your payment information is stored. You can review Stripe's privacy policy at <a href="https://stripe.com/privacy">stripe.com/privacy</a>.</p>
+                <p>If you choose to pay a deposit to confirm your booking, we store a reference to that payment, such as the payment intent ID, in our system for record-keeping purposes only.</p>
+            </section>
+
+            <section>
+                <h2>4. Data Storage and Security</h2>
+                <p>Customer data, including name, address, phone, email, and service records, is stored in a secure PostgreSQL database hosted by Neon, a cloud database provider, with TLS encryption in transit and at rest.</p>
+                <p>Access to the database is restricted to J &amp; E employees with administrative credentials. All administrative access is logged.</p>
+                <p>Payment card data is stored exclusively by Stripe. We never hold card numbers, expiration dates, or CVV codes.</p>
+                <p>If you have questions about our data security practices, contact us using the information at the bottom of this page.</p>
+            </section>
+
+            <section>
+                <h2>5. Employee and Technician Access</h2>
+                <p>Our field technicians, the people who work on your property, can:</p>
+                <ul>
+                    <li>Add customer information and create or book jobs for new and existing customers.</li>
+                    <li>View customer name, address, and contact information relevant to their current jobs.</li>
+                    <li>Upload before and after photos of completed work.</li>
+                </ul>
+                <p>Field technicians do not have administrative-level access to the database. They cannot view financial records, aggregate customer data, or access system administration tools.</p>
+            </section>
+
+            <section>
+                <h2>6. Your Rights</h2>
+                <p>You have the following rights regarding your personal information:</p>
+                <ul>
+                    <li><strong>Request your data</strong> - contact us to receive a copy of the personal information we have on file for you.</li>
+                    <li><strong>Request correction</strong> - if your information is inaccurate, let us know and we'll update it promptly.</li>
+                    <li><strong>Request deletion</strong> - you can ask us to delete your personal information, subject to any legal or financial record-keeping requirements.</li>
+                    <li><strong>Opt out of marketing</strong> - email us at the address below and we'll remove you from our promotional list. You may still receive transactional messages related to your service, including confirmations, reminders, and invoices.</li>
+                </ul>
+                <p>We will respond to any data request within 30 days. There is no fee for exercising any of these rights.</p>
+            </section>
+
+            <section>
+                <h2>7. Contact Us</h2>
+                <p>
+                    J &amp; E Professional Services, LLC<br>
+                    Gaffney, South Carolina 29340<br>
+                    {esc(COMPANY_PHONE)}<br>
+                    <a href="mailto:{esc(COMPANY_EMAIL)}">{esc(COMPANY_EMAIL)}</a>
+                </p>
+            </section>
+
+            <div class="notice">
+                This policy is a working draft for business planning and should be reviewed by a qualified attorney before publication.
+            </div>
+        </article>
+        """
+        self.respond(page("Privacy Policy", body, user))
 
     def request_estimate(self):
         user = self.current_user()
@@ -655,6 +794,9 @@ class App(BaseHTTPRequestHandler):
 
     def dashboard(self):
         user = self.current_user()
+        if user["role"] == "customer":
+            self.customer_portal()
+            return
         with db() as connection:
             sync_invoice_statuses(connection)
             customer_count = connection.execute("select count(*) from customers").fetchone()[0]
@@ -676,6 +818,391 @@ class App(BaseHTTPRequestHandler):
         </div>
         """
         self.respond(page("Dashboard", body, user))
+
+    def customer_portal(self):
+        user = self.current_user()
+        customer = self.customer_for_user(user)
+        if not customer:
+            self.respond(page("Customer Portal", "<div class='notice danger'>No customer record is linked to this account yet.</div>", user))
+            return
+        with db() as connection:
+            sync_invoice_statuses(connection)
+            estimates = connection.execute(
+                """
+                select estimates.*, coalesce(sum(estimate_line_items.total_cents), 0) as total_cents
+                from estimates
+                left join estimate_line_items on estimate_line_items.estimate_id = estimates.id
+                where estimates.customer_id = ?
+                group by estimates.id
+                order by estimates.updated_at desc
+                """,
+                (customer["id"],),
+            ).fetchall()
+            jobs = connection.execute(
+                """
+                select *
+                from jobs
+                where customer_id = ?
+                order by scheduled_for desc
+                """,
+                (customer["id"],),
+            ).fetchall()
+            invoices = connection.execute(
+                """
+                select invoices.*, jobs.service_name, jobs.scheduled_for
+                from invoices
+                join jobs on jobs.id = invoices.job_id
+                where invoices.customer_id = ?
+                order by invoices.created_at desc
+                """,
+                (customer["id"],),
+            ).fetchall()
+
+        estimate_rows = "".join(
+            f"""
+            <tr>
+                <td><a href="/portal/estimates/view?id={estimate['id']}">{esc(estimate['estimate_number'])}</a></td>
+                <td>{status_badge(estimate['status'])}</td>
+                <td>{esc(estimate['expires_at'])}</td>
+                <td>{dollars(estimate_total(estimate))}</td>
+            </tr>
+            """
+            for estimate in estimates
+        ) or "<tr><td colspan='4'>No estimates yet.</td></tr>"
+        job_rows = "".join(
+            f"""
+            <tr>
+                <td>{esc(job['scheduled_for'])}</td>
+                <td>{esc(job['service_name'])}</td>
+                <td>{status_badge(job['status'])}</td>
+                <td>{esc(job['completion_notes'] or job['notes'])}</td>
+            </tr>
+            """
+            for job in jobs
+        ) or "<tr><td colspan='4'>No jobs yet.</td></tr>"
+        invoice_rows = "".join(
+            f"""
+            <tr>
+                <td><a href="/portal/invoices/view?id={invoice['id']}">{esc(invoice['invoice_number'])}</a></td>
+                <td>{esc(invoice['due_date'])}</td>
+                <td>{dollars(invoice['total_cents'])}</td>
+                <td>{dollars(invoice_balance(invoice))}</td>
+                <td>{status_badge(invoice_status(invoice))}</td>
+            </tr>
+            """
+            for invoice in invoices
+        ) or "<tr><td colspan='5'>No invoices yet.</td></tr>"
+        body = f"""
+        <h1>My Portal</h1>
+        <section class="band">
+            <h2>Account</h2>
+            <p><strong>{esc(customer['name'])}</strong><br>{esc(customer['address'])}<br>{esc(customer['phone'])}<br>{esc(customer['email'])}</p>
+            <div class="grid">
+                <article class="metric"><strong>{dollars(customer['balance_cents'])}</strong><span>Account Balance</span></article>
+                <article class="metric"><strong>{len(estimates)}</strong><span>Estimates</span></article>
+                <article class="metric"><strong>{len(jobs)}</strong><span>Jobs</span></article>
+                <article class="metric"><strong>{len(invoices)}</strong><span>Invoices</span></article>
+            </div>
+        </section>
+        <section class="band">
+            <h2>Estimates</h2>
+            <table><thead><tr><th>Estimate</th><th>Status</th><th>Expires</th><th>Total</th></tr></thead><tbody>{estimate_rows}</tbody></table>
+        </section>
+        <section class="band">
+            <h2>Jobs</h2>
+            <table><thead><tr><th>Scheduled</th><th>Service</th><th>Status</th><th>Notes</th></tr></thead><tbody>{job_rows}</tbody></table>
+        </section>
+        <section class="band">
+            <h2>Invoices</h2>
+            <table><thead><tr><th>Invoice</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th></tr></thead><tbody>{invoice_rows}</tbody></table>
+        </section>
+        """
+        self.respond(page("My Portal", body, user))
+
+    def customer_estimate_detail(self, parsed):
+        user = self.current_user()
+        customer = self.customer_for_user(user)
+        if not customer:
+            self.respond("Customer record not found.", HTTPStatus.NOT_FOUND)
+            return
+        estimate_id = (parse_qs(parsed.query).get("id") or [""])[0]
+        with db() as connection:
+            estimate = connection.execute(
+                """
+                select estimates.*, customers.name as customer_name, customers.email, customers.phone, customers.address,
+                       coalesce(sum(estimate_line_items.total_cents), 0) as total_cents
+                from estimates
+                join customers on customers.id = estimates.customer_id
+                left join estimate_line_items on estimate_line_items.estimate_id = estimates.id
+                where estimates.id = ? and estimates.customer_id = ?
+                group by estimates.id
+                """,
+                (estimate_id, customer["id"]),
+            ).fetchone()
+            if not estimate:
+                self.respond("Estimate not found.", HTTPStatus.NOT_FOUND)
+                return
+            line_items = connection.execute(
+                "select * from estimate_line_items where estimate_id = ? order by id",
+                (estimate_id,),
+            ).fetchall()
+
+        line_rows = "".join(
+            f"""
+            <tr>
+                <td>{esc(item['description'])}</td>
+                <td>{item['quantity']}</td>
+                <td>{dollars(item['unit_price_cents'])}</td>
+                <td>{dollars(item['total_cents'])}</td>
+            </tr>
+            """
+            for item in line_items
+        )
+        approval_panel = ""
+        if estimate["status"] in ("Draft", "Sent", "Needs Changes"):
+            approval_panel = f"""
+            <section class="payment-panel no-print">
+                <h2>Approve Estimate</h2>
+                <form method="post" action="/portal/estimates/approve" class="form compact-form">
+                    <input type="hidden" name="estimate_id" value="{estimate['id']}">
+                    <label>Your Name <input name="approval_name" value="{esc(customer['name'])}" required></label>
+                    <label>Signature <input name="approval_signature" placeholder="Type your full legal name" required></label>
+                    <label class="checkbox-label"><input type="checkbox" name="accepted_terms" value="yes" required> I approve this estimate and understand the inspection disclaimer.</label>
+                    <button>Approve Estimate</button>
+                </form>
+            </section>
+            """
+        elif estimate["approved_at"]:
+            approval_panel = f"""
+            <section class="notice">
+                Approved by {esc(estimate['approval_name'])} on {esc(estimate['approved_at'])}.
+            </section>
+            """
+        approval_block = ""
+        if estimate["approved_at"]:
+            approval_block = f"""
+            <section class="signature-record">
+                <h2>Customer Approval</h2>
+                <p><strong>{esc(estimate['approval_signature'])}</strong></p>
+                <p>Approved by {esc(estimate['approval_name'])} on {esc(estimate['approved_at'])}</p>
+            </section>
+            """
+
+        body = f"""
+        <div class="invoice-actions no-print">
+            <a class="button secondary compact" href="/portal">Back to Portal</a>
+            <button onclick="window.print()">Print Estimate</button>
+        </div>
+        {approval_panel}
+        <article class="invoice-sheet">
+            <header class="invoice-header">
+                <div class="invoice-company">
+                    {logo()}
+                    <p>{esc(COMPANY_ADDRESS)}<br>{esc(COMPANY_PHONE)}<br>{esc(COMPANY_EMAIL)}</p>
+                </div>
+                <div class="invoice-title">
+                    <h1>Estimate</h1>
+                    <dl>
+                        <div><dt>Estimate #</dt><dd>{esc(estimate['estimate_number'])}</dd></div>
+                        <div><dt>Status</dt><dd>{status_badge(estimate['status'])}</dd></div>
+                        <div><dt>Expires</dt><dd>{esc(estimate['expires_at'])}</dd></div>
+                    </dl>
+                </div>
+            </header>
+            <section class="invoice-parties two-column">
+                <div>
+                    <h2>Customer</h2>
+                    <p><strong>{esc(estimate['customer_name'])}</strong><br>{esc(estimate['address'])}</p>
+                </div>
+                <div>
+                    <h2>Contact</h2>
+                    <p>{esc(estimate['phone'])}<br>{esc(estimate['email'])}</p>
+                </div>
+            </section>
+            <table class="invoice-lines">
+                <thead><tr><th>Description</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead>
+                <tbody>{line_rows}</tbody>
+            </table>
+            <section class="invoice-summary">
+                <div class="invoice-notes">
+                    <h2>Notes and Terms</h2>
+                    <p>{esc(estimate['notes'])}</p>
+                    <p>{esc(estimate['terms'])}</p>
+                    <p><strong>Disclaimer:</strong> {esc(ESTIMATE_DISCLAIMER)}</p>
+                </div>
+                <div class="invoice-totals">
+                    <div class="total-row total"><span>Estimate Total</span><strong>{dollars(estimate_total(estimate))}</strong></div>
+                </div>
+            </section>
+            {approval_block}
+        </article>
+        """
+        self.respond(page(f"Estimate {estimate['estimate_number']}", body, user))
+
+    def approve_estimate(self):
+        if self.command != "POST":
+            self.redirect("/portal")
+            return
+        user = self.current_user()
+        customer = self.customer_for_user(user)
+        if not customer:
+            self.respond("Customer record not found.", HTTPStatus.NOT_FOUND)
+            return
+        data = self.form_data()
+        if data.get("accepted_terms") != "yes":
+            self.respond("Estimate approval requires accepting the estimate terms.", HTTPStatus.BAD_REQUEST)
+            return
+        approval_name = data.get("approval_name")
+        approval_signature = data.get("approval_signature")
+        if not approval_name or not approval_signature:
+            self.respond("Name and signature are required.", HTTPStatus.BAD_REQUEST)
+            return
+        with db() as connection:
+            estimate = connection.execute(
+                "select * from estimates where id = ? and customer_id = ?",
+                (data.get("estimate_id"), customer["id"]),
+            ).fetchone()
+            if not estimate:
+                self.respond("Estimate not found.", HTTPStatus.NOT_FOUND)
+                return
+            if estimate["status"] not in ("Draft", "Sent", "Needs Changes"):
+                self.respond("This estimate can no longer be approved online.", HTTPStatus.BAD_REQUEST)
+                return
+            connection.execute(
+                """
+                update estimates
+                set status = 'Approved', approved_at = ?, approval_name = ?, approval_signature = ?, updated_at = ?
+                where id = ? and customer_id = ?
+                """,
+                (now(), approval_name, approval_signature, now(), estimate["id"], customer["id"]),
+            )
+        self.redirect(f"/portal/estimates/view?id={data.get('estimate_id')}")
+
+    def customer_invoice_detail(self, parsed):
+        user = self.current_user()
+        customer = self.customer_for_user(user)
+        if not customer:
+            self.respond("Customer record not found.", HTTPStatus.NOT_FOUND)
+            return
+        invoice_id = (parse_qs(parsed.query).get("id") or [""])[0]
+        with db() as connection:
+            sync_invoice_statuses(connection)
+            invoice = connection.execute(
+                """
+                select invoices.*, customers.name as customer_name, customers.email, customers.phone,
+                       customers.address, customers.balance_cents,
+                       jobs.service_name, jobs.scheduled_for, jobs.notes, jobs.completed_at,
+                       jobs.completion_notes, services.description as service_description
+                from invoices
+                join customers on customers.id = invoices.customer_id
+                join jobs on jobs.id = invoices.job_id
+                left join services on services.name = jobs.service_name
+                where invoices.id = ? and invoices.customer_id = ?
+                """,
+                (invoice_id, customer["id"]),
+            ).fetchone()
+            if not invoice:
+                self.respond("Invoice not found.", HTTPStatus.NOT_FOUND)
+                return
+            line_items = connection.execute(
+                "select * from invoice_line_items where invoice_id = ? order by id",
+                (invoice_id,),
+            ).fetchall()
+            payments = connection.execute(
+                "select * from payments where invoice_id = ? order by paid_at desc, id desc",
+                (invoice_id,),
+            ).fetchall()
+
+        line_rows = "".join(
+            f"""
+            <tr>
+                <td><strong>{esc(item['description'])}</strong><small>{esc(invoice['service_description'])}</small></td>
+                <td>{dollars(item['unit_price_cents'])}</td>
+                <td>{item['quantity']}</td>
+                <td>{dollars(item['total_cents'])}</td>
+            </tr>
+            """
+            for item in line_items
+        )
+        amount_due = invoice_balance(invoice)
+        paid_note = ""
+        if invoice["amount_paid_cents"]:
+            paid_note = f"<div class='total-row'><span>Amount Paid</span><strong>{dollars(invoice['amount_paid_cents'])}</strong></div>"
+        payment_rows = "".join(
+            f"""
+            <tr>
+                <td>{esc(payment['paid_at'])}</td>
+                <td>{esc(payment['method'])}</td>
+                <td>{esc(payment['reference'])}</td>
+                <td>{dollars(payment['amount_cents'])}</td>
+            </tr>
+            """
+            for payment in payments
+        )
+        payment_history = ""
+        if payments:
+            payment_history = f"""
+            <section class="payment-history">
+                <h2>Payment History</h2>
+                <table>
+                    <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th>Amount</th></tr></thead>
+                    <tbody>{payment_rows}</tbody>
+                </table>
+            </section>
+            """
+        work_notes = invoice["completion_notes"] or invoice["notes"] or "Thank you for your business."
+        body = f"""
+        <div class="invoice-actions no-print">
+            <a class="button secondary compact" href="/portal">Back to Portal</a>
+            <button onclick="window.print()">Print Invoice</button>
+        </div>
+        <article class="invoice-sheet">
+            <header class="invoice-header">
+                <div class="invoice-company">
+                    {logo()}
+                    <p>{esc(COMPANY_ADDRESS)}<br>{esc(COMPANY_PHONE)}</p>
+                </div>
+                <div class="invoice-title">
+                    <h1>Invoice</h1>
+                    <dl>
+                        <div><dt>Account #</dt><dd>{invoice['customer_id']:04d}</dd></div>
+                        <div><dt>Invoice #</dt><dd>{esc(invoice['invoice_number'])}</dd></div>
+                        <div><dt>Invoice Date</dt><dd>{esc(invoice['created_at'].split(' ')[0])}</dd></div>
+                        <div><dt>Due Date</dt><dd>{esc(invoice['due_date'])}</dd></div>
+                        <div><dt>Status</dt><dd>{status_badge(invoice_status(invoice))}</dd></div>
+                    </dl>
+                </div>
+            </header>
+            <section class="invoice-parties">
+                <div><h2>Bill To</h2><p><strong>{esc(invoice['customer_name'])}</strong><br>{esc(invoice['address'])}</p></div>
+                <div><h2>Service Address</h2><p><strong>{esc(invoice['customer_name'])}</strong><br>{esc(invoice['address'])}</p></div>
+                <div><h2>Primary Contact</h2><p><strong>{esc(invoice['customer_name'])}</strong><br>{esc(invoice['phone'])}<br>{esc(invoice['email'])}</p></div>
+            </section>
+            <table class="invoice-lines">
+                <thead><tr><th>Item</th><th>Cost</th><th>Qty</th><th>Price</th></tr></thead>
+                <tbody>{line_rows}</tbody>
+            </table>
+            <section class="invoice-summary">
+                <div class="invoice-notes">
+                    <h2>Terms</h2>
+                    <p>Payment is due 15 days from the date of service.</p>
+                    <h2>Notes</h2>
+                    <p>{esc(work_notes)}</p>
+                    <p>Service Date: {esc(date_part(invoice['scheduled_for']))}</p>
+                    <p>Due Date: {esc(invoice['due_date'])}</p>
+                </div>
+                <div class="invoice-totals">
+                    <div class="total-row"><span>Subtotal</span><strong>{dollars(invoice['subtotal_cents'])}</strong></div>
+                    <div class="total-row total"><span>Total</span><strong>{dollars(invoice['total_cents'])}</strong></div>
+                    {paid_note}
+                    <div class="total-row"><span>Amount Due</span><strong>{dollars(amount_due)}</strong></div>
+                    <div class="total-row total"><span>Balance Due</span><strong>{dollars(amount_due)}</strong></div>
+                </div>
+            </section>
+            {payment_history}
+        </article>
+        """
+        self.respond(page(f"Invoice {invoice['invoice_number']}", body, user))
 
     def employees(self):
         user = self.current_user()
@@ -971,6 +1498,15 @@ class App(BaseHTTPRequestHandler):
             """
             for item in line_items
         )
+        approval_block = ""
+        if estimate["approved_at"]:
+            approval_block = f"""
+            <section class="signature-record">
+                <h2>Customer Approval</h2>
+                <p><strong>{esc(estimate['approval_signature'])}</strong></p>
+                <p>Approved by {esc(estimate['approval_name'])} on {esc(estimate['approved_at'])}</p>
+            </section>
+            """
         convert_panel = ""
         if estimate["job_id"]:
             convert_panel = "<div class='notice no-print'>This estimate has already been converted into a scheduled job.</div>"
@@ -1028,11 +1564,13 @@ class App(BaseHTTPRequestHandler):
                     <h2>Notes and Terms</h2>
                     <p>{esc(estimate['notes'])}</p>
                     <p>{esc(estimate['terms'])}</p>
+                    <p><strong>Disclaimer:</strong> {esc(ESTIMATE_DISCLAIMER)}</p>
                 </div>
                 <div class="invoice-totals">
                     <div class="total-row total"><span>Estimate Total</span><strong>{dollars(estimate_total(estimate))}</strong></div>
                 </div>
             </section>
+            {approval_block}
         </article>
         <section class="payment-panel no-print">
             <h2>Estimate Status</h2>

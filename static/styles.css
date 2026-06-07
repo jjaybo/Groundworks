@@ -63,6 +63,23 @@ main {
     padding: 32px 0 56px;
 }
 
+.site-footer {
+    padding: 22px 32px;
+    color: var(--muted);
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    text-align: center;
+}
+
+.site-footer p {
+    margin: 0;
+}
+
+.site-footer a {
+    color: var(--green);
+    font-weight: 800;
+}
+
 .hero {
     min-height: 420px;
     display: grid;
@@ -147,6 +164,32 @@ table,
     padding: 28px;
 }
 
+.legal-page {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 32px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.legal-page section {
+    margin-top: 28px;
+}
+
+.legal-page h1 {
+    margin-top: 0;
+}
+
+.legal-page h2 {
+    color: var(--green);
+    font-size: 22px;
+}
+
+.legal-page li {
+    margin-bottom: 8px;
+}
+
 .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -210,6 +253,18 @@ select {
     color: var(--ink);
     background: white;
     font: inherit;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.checkbox-label input {
+    width: auto;
+    min-height: auto;
+    margin-top: 6px;
 }
 
 table {
@@ -501,6 +556,23 @@ small {
     font-size: 12px;
     font-weight: 800;
     text-transform: uppercase;
+}
+
+.signature-record {
+    margin-top: 28px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+}
+
+.signature-record h2 {
+    margin: 0 0 8px;
+    color: var(--green);
+    font-size: 14px;
+    text-transform: uppercase;
+}
+
+.signature-record p {
+    margin: 0 0 8px;
 }
 
 .invoice-footer {
