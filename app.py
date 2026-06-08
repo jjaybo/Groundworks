@@ -84,6 +84,7 @@ def init_database():
                 email text not null,
                 phone text,
                 address text,
+                internal_notes text,
                 balance_cents integer not null default 0,
                 referral_credit_cents integer not null default 0,
                 created_at text not null
@@ -143,6 +144,7 @@ def init_database():
                 job_duration_minutes integer not null default 60,
                 status text not null default 'Scheduled',
                 notes text,
+                internal_notes text,
                 completed_at text,
                 completion_notes text,
                 completion_services text,
@@ -244,6 +246,8 @@ def init_database():
 
         ensure_column(connection, "jobs", "completed_at", "text")
         ensure_column(connection, "jobs", "completion_notes", "text")
+        ensure_column(connection, "jobs", "internal_notes", "text")
+        ensure_column(connection, "customers", "internal_notes", "text")
         ensure_column(connection, "jobs", "estimate_id", "integer references estimates(id)")
         ensure_column(connection, "jobs", "job_duration_minutes", "integer not null default 60")
         ensure_column(connection, "jobs", "completion_services", "text")
@@ -403,6 +407,18 @@ def settlement_cash_check_difference(report):
     expected = report["cash_expected_cents"] + report["check_expected_cents"]
     counted = report["cash_counted_cents"] + report["check_counted_cents"]
     return counted - expected
+
+
+def month_bounds(month_value):
+    try:
+        start = dt.datetime.strptime(month_value, "%Y-%m").date().replace(day=1)
+    except (TypeError, ValueError):
+        start = dt.date.today().replace(day=1)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
 
 
 def safe_filename(filename):
@@ -867,6 +883,9 @@ class App(BaseHTTPRequestHandler):
             elif path == "/customers/new":
                 if self.require_staff():
                     self.new_customer()
+            elif path == "/customers/statement":
+                if self.require_admin():
+                    self.customer_statement(parsed)
             elif path == "/service-agreements/view":
                 if self.require_staff():
                     self.staff_service_agreement(parsed)
@@ -1877,6 +1896,7 @@ class App(BaseHTTPRequestHandler):
         paid_note = ""
         if invoice["amount_paid_cents"]:
             paid_note = f"<div class='total-row'><span>Amount Paid</span><strong>{dollars(invoice['amount_paid_cents'])}</strong></div>"
+        paid_stamp = "<div class='paid-stamp'>Paid</div>" if invoice_status(invoice) == "Paid" else ""
         payment_rows = "".join(
             f"""
             <tr>
@@ -1913,6 +1933,7 @@ class App(BaseHTTPRequestHandler):
                 </div>
                 <div class="invoice-title">
                     <h1>Invoice</h1>
+                    {paid_stamp}
                     <dl>
                         <div><dt>Account #</dt><dd>{invoice['customer_id']:04d}</dd></div>
                         <div><dt>Invoice #</dt><dd>{esc(invoice['invoice_number'])}</dd></div>
@@ -2055,7 +2076,10 @@ class App(BaseHTTPRequestHandler):
                 <td>{esc(row['address'])}</td>
                 <td>{dollars(row['balance_cents'])}</td>
                 <td>{status_badge(row['agreement_status'] or 'Not Started')}</td>
-                <td><a class="button secondary compact" href="/service-agreements/view?customer_id={row['id']}">Agreement</a></td>
+                <td>
+                    <a class="button secondary compact" href="/service-agreements/view?customer_id={row['id']}">Agreement</a>
+                    {'<a class="button secondary compact" href="/customers/statement?customer_id=' + str(row['id']) + '">Statement</a>' if user['role'] == 'admin' else ''}
+                </td>
             </tr>
             """
             for row in rows
@@ -2072,8 +2096,8 @@ class App(BaseHTTPRequestHandler):
             data = self.form_data()
             with db() as connection:
                 connection.execute(
-                    "insert into customers (name, email, phone, address, created_at) values (?, ?, ?, ?, ?)",
-                    (data.get("name"), data.get("email"), data.get("phone"), data.get("address"), now()),
+                    "insert into customers (name, email, phone, address, internal_notes, created_at) values (?, ?, ?, ?, ?, ?)",
+                    (data.get("name"), data.get("email"), data.get("phone"), data.get("address"), data.get("internal_notes"), now()),
                 )
             self.redirect("/customers")
             return
@@ -2084,10 +2108,158 @@ class App(BaseHTTPRequestHandler):
             <label>Email <input name="email" type="email" required></label>
             <label>Phone <input name="phone"></label>
             <label>Service Address <input name="address"></label>
+            <label>Internal Customer Notes <textarea name="internal_notes" rows="4" placeholder="Gate codes, animals on site, access warnings, obstacles, hazards, or special service instructions."></textarea></label>
             <button>Save Customer</button>
         </form>
         """
         self.respond(page("Add Customer", body, user))
+
+    def customer_statement(self, parsed):
+        user = self.current_user()
+        params = parse_qs(parsed.query)
+        customer_id = (params.get("customer_id") or [""])[0]
+        selected_month = (params.get("month") or [dt.date.today().strftime("%Y-%m")])[0]
+        month_start, month_end = month_bounds(selected_month)
+        with db() as connection:
+            sync_invoice_statuses(connection)
+            customer = connection.execute("select * from customers where id = ?", (customer_id,)).fetchone()
+            if not customer:
+                self.respond("Customer not found.", HTTPStatus.NOT_FOUND)
+                return
+            invoices = connection.execute(
+                """
+                select invoices.*, jobs.service_name, jobs.scheduled_for
+                from invoices
+                join jobs on jobs.id = invoices.job_id
+                where invoices.customer_id = ?
+                  and date(invoices.created_at) >= ?
+                  and date(invoices.created_at) < ?
+                order by invoices.created_at, invoices.id
+                """,
+                (customer["id"], month_start.isoformat(), month_end.isoformat()),
+            ).fetchall()
+            payments = connection.execute(
+                """
+                select payments.*, invoices.invoice_number
+                from payments
+                join invoices on invoices.id = payments.invoice_id
+                where payments.customer_id = ?
+                  and date(payments.paid_at) >= ?
+                  and date(payments.paid_at) < ?
+                order by payments.paid_at, payments.id
+                """,
+                (customer["id"], month_start.isoformat(), month_end.isoformat()),
+            ).fetchall()
+
+        activity = []
+        for invoice in invoices:
+            activity.append(
+                {
+                    "date": invoice["created_at"].split(" ")[0],
+                    "type": "Invoice",
+                    "reference": invoice["invoice_number"],
+                    "description": invoice["service_name"],
+                    "charge": invoice["total_cents"],
+                    "payment": 0,
+                }
+            )
+        for payment in payments:
+            activity.append(
+                {
+                    "date": payment["paid_at"],
+                    "type": "Payment",
+                    "reference": payment["invoice_number"],
+                    "description": f"{payment['method']} payment {payment['reference'] or ''}".strip(),
+                    "charge": 0,
+                    "payment": payment["amount_cents"],
+                }
+            )
+        activity.sort(key=lambda item: (item["date"], item["type"]))
+
+        running_balance = 0
+        activity_rows = []
+        for item in activity:
+            running_balance += item["charge"] - item["payment"]
+            activity_rows.append(
+                f"""
+                <tr>
+                    <td>{esc(item['date'])}</td>
+                    <td>{esc(item['type'])}</td>
+                    <td>{esc(item['reference'])}</td>
+                    <td>{esc(item['description'])}</td>
+                    <td>{dollars(item['charge']) if item['charge'] else ''}</td>
+                    <td>{dollars(item['payment']) if item['payment'] else ''}</td>
+                    <td>{dollars(running_balance)}</td>
+                </tr>
+                """
+            )
+        rows = "".join(activity_rows) or "<tr><td colspan='7'>No account activity for this month.</td></tr>"
+        month_label = month_start.strftime("%B %Y")
+        previous_month = (month_start - dt.timedelta(days=1)).strftime("%Y-%m")
+        next_month = month_end.strftime("%Y-%m")
+        body = f"""
+        <div class="invoice-actions no-print">
+            <a class="button secondary compact" href="/customers">Back to Customers</a>
+            <form method="get" action="/customers/statement" class="inline-form">
+                <input type="hidden" name="customer_id" value="{customer['id']}">
+                <input type="month" name="month" value="{esc(month_start.strftime('%Y-%m'))}">
+                <button>View Month</button>
+            </form>
+            <a class="button secondary compact" href="/customers/statement?customer_id={customer['id']}&month={previous_month}">Previous</a>
+            <a class="button secondary compact" href="/customers/statement?customer_id={customer['id']}&month={next_month}">Next</a>
+            <button onclick="window.print()">Print Statement</button>
+        </div>
+        <article class="invoice-sheet statement-sheet">
+            <header class="invoice-header">
+                <div class="invoice-company">
+                    {logo()}
+                    <p>{esc(COMPANY_ADDRESS)}<br>{esc(COMPANY_PHONE)}<br>{esc(COMPANY_EMAIL)}</p>
+                </div>
+                <div class="invoice-title">
+                    <h1>Statement</h1>
+                    <dl>
+                        <div><dt>Account #</dt><dd>{customer['id']:04d}</dd></div>
+                        <div><dt>Month</dt><dd>{esc(month_label)}</dd></div>
+                        <div><dt>Printed</dt><dd>{dt.date.today().isoformat()}</dd></div>
+                    </dl>
+                </div>
+            </header>
+            <section class="invoice-parties two-column">
+                <div>
+                    <h2>Customer</h2>
+                    <p><strong>{esc(customer['name'])}</strong><br>{esc(customer['address'])}</p>
+                </div>
+                <div>
+                    <h2>Primary Contact</h2>
+                    <p>{esc(customer['phone'])}<br>{esc(customer['email'])}</p>
+                </div>
+            </section>
+            <section class="grid statement-metrics">
+                <article class="metric"><strong>{dollars(customer['balance_cents'])}</strong><span>Current Account Balance</span></article>
+                <article class="metric"><strong>{dollars(customer['referral_credit_cents'])}</strong><span>Available Credit</span></article>
+            </section>
+            <table class="invoice-lines statement-lines">
+                <thead><tr><th>Date</th><th>Type</th><th>Reference</th><th>Description</th><th>Charge</th><th>Payment/Credit</th><th>Running Balance</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+            <section class="invoice-summary">
+                <div class="invoice-notes">
+                    <h2>Statement Notes</h2>
+                    <p>This statement summarizes account activity for {esc(month_label)}. Current balance and available credit reflect the customer account as of the print date.</p>
+                </div>
+                <div class="invoice-totals">
+                    <div class="total-row"><span>Monthly Charges</span><strong>{dollars(sum(item['charge'] for item in activity))}</strong></div>
+                    <div class="total-row"><span>Monthly Payments/Credits</span><strong>{dollars(sum(item['payment'] for item in activity))}</strong></div>
+                    <div class="total-row total"><span>Current Balance</span><strong>{dollars(customer['balance_cents'])}</strong></div>
+                    <div class="total-row"><span>Available Credit</span><strong>{dollars(customer['referral_credit_cents'])}</strong></div>
+                </div>
+            </section>
+            <footer class="invoice-footer">
+                <p>PHONE: {esc(COMPANY_PHONE)} &nbsp; EMAIL: {esc(COMPANY_EMAIL)} &nbsp; {esc(COMPANY_WEBSITE)}</p>
+            </footer>
+        </article>
+        """
+        self.respond(page(f"{customer['name']} Statement", body, user))
 
     def staff_service_agreement(self, parsed):
         user = self.current_user()
@@ -2374,7 +2546,8 @@ class App(BaseHTTPRequestHandler):
                     <input type="hidden" name="estimate_id" value="{estimate['id']}">
                     <label>Date and Time <input name="scheduled_for" type="datetime-local" required></label>
                     <label>Estimated Duration Minutes <input name="job_duration_minutes" type="number" min="15" step="15" value="{DEFAULT_JOB_DURATION_MINUTES}" required></label>
-                    <label>Job Notes <textarea name="notes" rows="3">{esc(estimate['notes'])}</textarea></label>
+                    <label>Customer-Facing Job Notes <textarea name="notes" rows="3"></textarea></label>
+                    <label>Internal Work Order Notes <textarea name="internal_notes" rows="3">{esc(estimate['notes'])}</textarea></label>
                     <button>Convert to Job</button>
                 </form>
             </section>
@@ -2508,8 +2681,8 @@ class App(BaseHTTPRequestHandler):
                 notes += f" {data.get('notes')}"
             connection.execute(
                 """
-                insert into jobs (customer_id, estimate_id, service_name, scheduled_for, job_duration_minutes, notes, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
+                insert into jobs (customer_id, estimate_id, service_name, scheduled_for, job_duration_minutes, notes, internal_notes, created_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     estimate["customer_id"],
@@ -2518,6 +2691,7 @@ class App(BaseHTTPRequestHandler):
                     data.get("scheduled_for"),
                     duration_minutes,
                     notes,
+                    data.get("internal_notes"),
                     now(),
                 ),
             )
@@ -2730,6 +2904,7 @@ class App(BaseHTTPRequestHandler):
             job = connection.execute(
                 """
                 select jobs.*, customers.name as customer_name, customers.email, customers.phone, customers.address,
+                       customers.internal_notes as customer_internal_notes,
                        invoices.id as invoice_id, invoices.invoice_number
                 from jobs
                 join customers on customers.id = jobs.customer_id
@@ -2795,6 +2970,17 @@ class App(BaseHTTPRequestHandler):
                 </div>
             </section>
             """
+        internal_notes_panel = ""
+        if job["customer_internal_notes"] or job["internal_notes"]:
+            internal_notes_panel = f"""
+            <section class="band work-order-notes">
+                <h2>Internal Work Order Notes</h2>
+                <dl class="detail-list">
+                    <div><dt>Customer Notes</dt><dd>{esc(job['customer_internal_notes'] or 'None recorded')}</dd></div>
+                    <div><dt>Job Notes</dt><dd>{esc(job['internal_notes'] or 'None recorded')}</dd></div>
+                </dl>
+            </section>
+            """
         completion_record = ""
         if job["completed_at"]:
             completion_record = f"""
@@ -2850,6 +3036,7 @@ class App(BaseHTTPRequestHandler):
             <p>{invoice_link}</p>
         </section>
         {completion_panel}
+        {internal_notes_panel}
         {photo_sections}
         {completion_record}
         """
@@ -3420,6 +3607,7 @@ class App(BaseHTTPRequestHandler):
         paid_note = ""
         if invoice["amount_paid_cents"]:
             paid_note = f"<div class='total-row'><span>Amount Paid</span><strong>{dollars(invoice['amount_paid_cents'])}</strong></div>"
+        paid_stamp = "<div class='paid-stamp'>Paid</div>" if current_status == "Paid" else ""
 
         payment_method_options = "".join(f"<option>{esc(method)}</option>" for method in PAYMENT_METHODS)
         payment_form = ""
@@ -3482,6 +3670,7 @@ class App(BaseHTTPRequestHandler):
                 </div>
                 <div class="invoice-title">
                     <h1>Invoice</h1>
+                    {paid_stamp}
                     <dl>
                         <div><dt>Account #</dt><dd>{invoice['customer_id']:04d}</dd></div>
                         <div><dt>Invoice #</dt><dd>{esc(invoice['invoice_number'])}</dd></div>
@@ -3580,8 +3769,8 @@ class App(BaseHTTPRequestHandler):
                     return
                 connection.execute(
                     """
-                    insert into jobs (customer_id, service_name, scheduled_for, job_duration_minutes, notes, created_at)
-                    values (?, ?, ?, ?, ?, ?)
+                    insert into jobs (customer_id, service_name, scheduled_for, job_duration_minutes, notes, internal_notes, created_at)
+                    values (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         data.get("customer_id"),
@@ -3589,6 +3778,7 @@ class App(BaseHTTPRequestHandler):
                         data.get("scheduled_for"),
                         duration_minutes,
                         data.get("notes"),
+                        data.get("internal_notes"),
                         now(),
                     ),
                 )
@@ -3606,7 +3796,8 @@ class App(BaseHTTPRequestHandler):
             <label>Service <select name="service_name" required>{service_options}</select></label>
             <label>Date and Time <input name="scheduled_for" type="datetime-local" required></label>
             <label>Estimated Duration Minutes <input name="job_duration_minutes" type="number" min="15" step="15" value="{DEFAULT_JOB_DURATION_MINUTES}" required></label>
-            <label>Notes <textarea name="notes" rows="4"></textarea></label>
+            <label>Customer-Facing Job Notes <textarea name="notes" rows="4"></textarea></label>
+            <label>Internal Work Order Notes <textarea name="internal_notes" rows="4" placeholder="Gate codes, animals on site, access warnings, obstacles, hazards, or special service instructions."></textarea></label>
             <button>Schedule Job</button>
         </form>
         """
